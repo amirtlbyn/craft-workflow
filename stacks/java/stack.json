@@ -1,0 +1,56 @@
+{
+  "id": "java",
+  "label": "Java",
+  "emoji": "☕",
+  "language": "java",
+  "priority": 55,
+  "detect": {
+    "any_file": ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"]
+  },
+  "source_extensions": [".java", ".kt"],
+  "tests": {
+    "globs": ["src/test/*", "*/src/test/*", "*Test.java", "*Tests.java", "*IT.java", "*Test.kt", "*Tests.kt"],
+    "extensions": [".java", ".kt"],
+    "id_rule": "Put the criterion ID first in the display name: @DisplayName(\"KYC-2: given ..., when ..., then ...\"). Kotlin backtick names work too: fun `KYC-2 expired document is refused`()."
+  },
+  "checks": {
+    "tests": [
+      { "when_file": "mvnw", "run": "./mvnw -q test" },
+      { "when_file": "gradlew", "run": "./gradlew test" },
+      { "when_file": "pom.xml", "run": "mvn -q test" },
+      { "run": "gradle test" }
+    ],
+    "lint": [
+      { "when_contains": { "file": "pom.xml", "pattern": "maven-checkstyle-plugin" }, "run": "./mvnw -q checkstyle:check" },
+      { "when_contains": { "file": "build.gradle", "pattern": "checkstyle" }, "run": "./gradlew checkstyleMain" },
+      { "when_contains": { "file": "build.gradle.kts", "pattern": "checkstyle" }, "run": "./gradlew checkstyleMain" }
+    ],
+    "format": [
+      { "when_contains": { "file": "pom.xml", "pattern": "spotless-maven-plugin" }, "run": "./mvnw -q spotless:check" },
+      { "when_contains": { "file": "build.gradle", "pattern": "spotless" }, "run": "./gradlew spotlessCheck" },
+      { "when_contains": { "file": "build.gradle.kts", "pattern": "spotless" }, "run": "./gradlew spotlessCheck" }
+    ],
+    "build": [
+      { "when_file": "mvnw", "run": "./mvnw -q -DskipTests verify" },
+      { "when_file": "gradlew", "run": "./gradlew build -x test" }
+    ]
+  },
+  "paths": {
+    "money": ["*/wallet*/*", "*/ledger/*", "*/payment*/*", "*/payout*/*", "*/withdraw*/*", "*/deposit*/*", "*/transfer*/*", "*/settlement*/*", "*/billing/*", "*Balance*.java", "*Fee*.java", "*Commission*.java", "*Money*.java"],
+    "auth": ["*/security/*", "*/auth/*", "*Security*.java", "*Auth*.java", "*Jwt*.java", "*Token*.java", "*Otp*.java", "*Password*.java", "*Permission*.java", "*Role*.java"],
+    "migrations": ["*/db/migration/*", "db/migration/*", "*/db/changelog/*", "*/resources/db/*", "*/flyway/*", "*/liquibase/*", "V*__*.sql"],
+    "models": ["*/entity/*", "*/entities/*", "*/domain/*", "*/model/*", "*/repository/*", "*Entity.java", "*Repository.java", "*Dao.java", "*Mapper.java", "*Entity.kt", "*Repository.kt"],
+    "views": ["*/controller/*", "*/web/*", "*/api/*", "*/rest/*", "*/resource/*", "*Controller.java", "*Resource.java", "*Endpoint.java", "*Controller.kt", "*Dto.java", "*Request.java", "*Response.java"]
+  },
+  "toolchain": [
+    { "id": "jdk", "purpose": "A JDK. The build wrapper (mvnw or gradlew) brings the rest.", "required": true, "any_of": [{ "command": "java" }] },
+    { "id": "build", "purpose": "The build tool, when the repository has no wrapper.", "required": false, "any_of": [{ "command": "mvn" }, { "command": "gradle" }] }
+  ],
+  "skills": ["java-practices"],
+  "standards": ["java_standards"],
+  "concurrency": {
+    "skill": "",
+    "note": "Spring MVC is thread-per-request. Reactive (WebFlux) and virtual threads are different models. The concurrency skill reads which one this service runs before it allows CompletableFuture, executors, or reactive types."
+  },
+  "lenses": "stacks/java/lenses.md"
+}

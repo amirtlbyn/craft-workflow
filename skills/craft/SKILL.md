@@ -1,0 +1,171 @@
+---
+name: craft
+description: "The Craft engineering workflow. Load it at the start of any coding request to pick the cost route (quick, task, or project), start the spec when the route needs one, and run the work against it. Use it when the user runs /craft, asks to start or resume work, asks which route a request needs, or asks how this workflow operates."
+---
+
+# craft — the workflow router
+
+This skill decides **how much process a request gets**, and runs it. On `task`
+and `project`, the process is spec-driven: a spec the developer approves comes
+first, and everything after it is checked against that spec.
+
+## Resolve paths first
+
+Every path in this workflow resolves against the **plugin root**, the directory
+that holds `.claude-plugin/plugin.json`. Use `${CLAUDE_PLUGIN_ROOT}` when the
+host substitutes it. Otherwise the plugin root is two directories above this
+file. The workflow reads the plugin root, the host repository, and the optional
+host documents in `config/workflow.md` §1. When an optional document is absent,
+continue without it.
+
+`bin/<name>` in this workflow means `<plugin root>/bin/<name>`. Use
+`"${CLAUDE_PLUGIN_ROOT}"/bin/<name>` when that variable is set, and the absolute
+path otherwise. Run it from the host repository root. The scripts find
+`.claude/` from there. **Give every subagent the plugin root as an absolute
+path.** A subagent cannot see where this skill was loaded from.
+
+## Step 1 — Read the configuration, and check for work in progress
+
+Read `config/workflow.md`. When it disagrees with this skill, **the
+configuration wins.** A host override at `<repo>/.claude/craft.md` wins over
+both.
+
+Then run `bin/craft-spec status`. When a spec is active, the request may be the
+next step of that spec. Say so, and continue it instead of starting over.
+
+Then run `bin/craft-stack` once per session. It names the stacks of the
+repository (🐍 django, ⚡ fastapi, 🐹 go, ☕ java, 🟩 node) and the directory
+each one owns. The stack decides the skills you load
+(`bin/craft-stack skills --paths <files>`), the checks that prove Gate A
+(`bin/craft-stack checks`), and the lens notes reviewers read. When no stack is
+found, the Django defaults apply, as before 0.7.
+
+When the request asks for speed, async, parallel work, or "high concurrency",
+or the change adds concurrent code, load `concurrency` before anything else.
+It runs `bin/craft-stack concurrency` and decides whether this system is built
+for it.
+
+## Step 2 — Classify the request into a route
+
+When Jev is on (`bin/craft-jev status --quiet` exits 0, or the session-start
+status says `jev on`), load the `jev` skill and run
+`bin/craft-jev decide --stage route --request "<the request>"` first. Use its
+route, risk, implementer model, and skills as the `jev` skill says. When it is
+off or undecided, classify yourself.
+
+Apply `config/workflow.md` §2. State the route and one reason in one line, then
+continue. Do not ask for confirmation. The user overrides with "use route X".
+
+```
+Route: task — new endpoint with a business rule, one merge request, no design question.
+```
+
+Promote, never demote. A request that looks like **quick** but touches money,
+authentication, authorization, a migration, concurrency, or an external contract
+runs as **task**. Say why. When a **quick** request grows, stop, say so, and
+restate the route.
+
+## Step 3 — Run the route
+
+### quick
+
+1. Make the change in the main session. Load the skills
+   `bin/craft-stack skills --paths <the files>` names: `python-style` and
+   `django-practices` for Django, `fastapi-practices` for FastAPI,
+   `go-practices` for Go, `java-practices`, `node-practices`. Read
+   `skills/asd-ste100/references/card.md` before you write a comment or
+   docstring.
+2. Run the focused checks from §6, or the stack's from `bin/craft-stack
+   checks`, through `bin/craft-check`.
+3. Read your own diff once against `skills/review-protocol/lenses/style.md`.
+4. Report the diff and the checks that ran.
+
+No spec, no reviewer subagent, no files under `.claude/specs/`.
+
+### task
+
+1. **Specify.** Load `spec` and follow it: `bin/craft-spec new --route task`,
+   write `spec.md`, present it, stop for approval, `bin/craft-approve`.
+2. **Tasks.** Write a short checklist into `tasks.md`. Each line names a file and
+   the criterion it serves.
+3. **Implement in this session.** You already hold the context, so do not spawn
+   `coder`. Load the stack's skills (`bin/craft-stack skills --paths
+   <files>`). Load `minimal-code` before you write new code. Load
+   `concurrency` before you write concurrent code. Load
+   `validation-discipline` before you add a check. Load `test-discipline`
+   before you write the tests. Pull only the standards sections the spec
+   lists, with `bin/craft-std`.
+4. **Gate A.** Run the checkpoint, lint, import order, and format through
+   `bin/craft-check` (the stack's rows: `bin/craft-stack checks`, plus `race`
+   for Go concurrency). Pass `--junit auto` to a test runner that writes JUnit
+   XML. Run `bin/craft-spec trace`. Fix until all are green.
+5. **Gate B.** Load `review-protocol`. When Jev is on, take the lenses from
+   `bin/craft-jev decide --stage review`. Otherwise route the lenses with §3. Spawn
+   `reviewer`, plus `deep-reviewer` in parallel when the spec says `Risk: high`.
+   Give each one the plugin root, the spec directory, its lenses, and the diff
+   command.
+   Adjudicate with `skills/review-protocol/references/adjudication.md`.
+6. **Fix and close.** Fix confirmed findings. Re-review only the delta, only when
+   a Critical or High was confirmed. Append the gates to `log.md`, tick
+   `tasks.md`, then `/finish`.
+
+### project
+
+1. **Specify** as on `task`, with `--route project`.
+2. `/design-brainstorm` when the shape is unsettled. `/arch` for a second
+   opinion.
+3. **Plan.** `/plan` — `planner` writes `design.md` and the sessions in
+   `tasks.md` from the approved spec.
+4. **Per session:** delegate to `coder` with the plugin root, the spec
+   directory, and the session number. Do not paste the spec into the prompt.
+   `coder` reads it. Then run Gate A yourself with `bin/craft-spec trace
+   --session N`, review, adjudicate, fix, and append to `log.md`.
+5. `/finish` per merge request.
+
+## Step 4 — Nothing is done until both gates are green
+
+- **Gate A — spec verified.** `bin/craft-spec trace` shows one test per
+  criterion, the checkpoint ran through `bin/craft-check` and passed, and lint,
+  import order, and format pass.
+- **Gate B — review green.** Every routed lens ran, no Confirmed Critical or
+  High finding is open, and every lens checklist item is answered.
+
+On `quick`, Gate A is the focused checks and Gate B is your own style-lens read.
+
+When Gate A passes and Gate B has not run, the state is `tests green`. When a
+check could not run, the state is `blocked`, and you name the command. **Never
+report `done` for a check you did not execute.** The `Stop` hook refuses a
+`done` that no recorded check supports.
+
+Do not start the next session while the current one is `blocked`, unless the
+developer says to.
+
+## Cost discipline
+
+The developer pays for every token. These rules are part of the workflow:
+
+- Read a file once per session. Read the section you need, not the whole file.
+- Pull standards with `bin/craft-std <file> <section>`. Never load a whole
+  standard to answer one question.
+- Run checks through `bin/craft-check`. It prints the summary or the failures,
+  and keeps the full log on disk.
+- Give a subagent paths and IDs, not pasted content.
+- One `reviewer` pass per round. `deep-reviewer` only on `Risk: high`. Re-review
+  only the delta.
+- Show the developer tables and decisions, not whole files.
+
+## What this skill will not do
+
+- It will not pick a cheaper route when the rules force a higher one.
+- It will not write code on `task` or `project` before the spec is approved.
+- It will not report a check as passed without running it.
+- It will not edit a `*.human.md` standard. It reports the fragment and its
+  location to the developer.
+
+## Related
+
+- `config/workflow.md` — the routing tables. Edit that file, not this one.
+- `spec` — how to write and approve the spec.
+- `planner` — `design.md` and sessions for the project route.
+- `review-protocol` — the reviewer contract, the lenses, and adjudication.
+- `minimal-code`, `test-discipline`, `validation-discipline` — what to write, what to test, and what to check.

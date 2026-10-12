@@ -1,0 +1,9 @@
+{
+  "comment": "USD per million tokens, by model family, for the board's cost-per-agent view. The engine's own ledger ($.session.usage().cost, what /cost shows) is the session total; the board splits that total across agents in proportion to each agent's tokens priced with this table, so the total is exact even when a price here is out of date. Edit a row when prices change. A model id matches the first family whose 'match' it contains.",
+  "families": [
+    { "family": "opus", "match": ["opus"], "input": 5.0, "output": 25.0, "cache_write": 6.25, "cache_read": 0.5 },
+    { "family": "sonnet", "match": ["sonnet"], "input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3 },
+    { "family": "haiku", "match": ["haiku"], "input": 1.0, "output": 5.0, "cache_write": 1.25, "cache_read": 0.1 },
+    { "family": "other", "match": [""], "input": 3.0, "output": 15.0, "cache_write": 3.75, "cache_read": 0.3 }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "comment": "The tools this workflow needs in order to prove Gate A. bin/craft-toolchain reads this file, reports which ones are missing, and installs them on request. config/workflow.md section 6 remains the human-readable source for the Tests, Lint, Import order and Format rows; this file names the packages behind them and adds the optional tools that section 6 does not mention. A tool marked required:true cannot be missing without the workflow losing the ability to prove a check ran. A tool marked required:false makes review better but never gates. Each entry is satisfied when any one of its any_of commands is on PATH, which is how the Format row means 'detect black or pyink'.",
+  "tools": [
+    {
+      "id": "lint",
+      "purpose": "Lint. Gate A does not pass until lint passes.",
+      "source": "config/workflow.md section 6, Lint row",
+      "required": true,
+      "any_of": [
+        { "command": "pylint", "pip": "pylint" }
+      ]
+    },
+    {
+      "id": "import-order",
+      "purpose": "Import order. Gate A does not pass until it is clean.",
+      "source": "config/workflow.md section 6, Import order row",
+      "required": true,
+      "any_of": [
+        { "command": "isort", "pip": "isort" }
+      ]
+    },
+    {
+      "id": "format",
+      "purpose": "Formatting. Either formatter satisfies this row.",
+      "source": "config/workflow.md section 6, Format row, and standards/python_code_style.ai.md",
+      "required": true,
+      "any_of": [
+        { "command": "black", "pip": "black" },
+        { "command": "pyink", "pip": "pyink" }
+      ]
+    },
+    {
+      "id": "tests",
+      "purpose": "The test runner. Section 6 runs it inside the container, so a host copy is a convenience, not the checkpoint.",
+      "source": "config/workflow.md section 6, Tests row",
+      "required": false,
+      "any_of": [
+        { "command": "pytest", "pip": "pytest" }
+      ]
+    },
+    {
+      "id": "types-and-lsp",
+      "purpose": "A type checker and language server. It gives the reviewers real diagnostics instead of read-and-infer, which is cheaper and more accurate than a model reading for `X | None`.",
+      "source": "Not in section 6. Optional, and it never gates.",
+      "required": false,
+      "any_of": [
+        { "command": "basedpyright", "pip": "basedpyright" },
+        { "command": "pyright", "npm": "pyright" },
+        { "command": "mypy", "pip": "mypy" }
+      ]
+    }
+  ],
+  "forbidden": [
+    {
+      "command": "yapf",
+      "reason": "config/workflow.md section 6 says: Never `yapf`. standards/python_code_style.ai.md picks black or pyink. Never install it, and never propose it, whoever asks."
+    }
+  ]
+}

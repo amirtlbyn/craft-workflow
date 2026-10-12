@@ -1,0 +1,94 @@
+# CI for the craft-workflow plugin.
+#
+# Everything here is deterministic and makes no model call or ANTHROPIC_API_KEY
+# request. Python 3.10 runners install the small tomli compatibility dependency
+# declared in requirements.txt when pip is available; Python 3.11+ uses the
+# equivalent stdlib module. Without either, one TOML parse case is SKIPPED.
+#
+# The eval suite under evals/ is NOT run here. It makes real model calls against
+# a real credential, and this runner has neither. A developer runs it by hand on
+# a machine that can reach the API. evals/README.md has the command.
+# scripts/validate_evals.py is what CI runs instead: it reads every case and
+# every grader and reports the mistakes that would otherwise only appear after a
+# paid run.
+#
+# If your runner cannot pull from Docker Hub, point CRAFT_CI_IMAGE at your
+# internal mirror in Settings > CI/CD > Variables. On a shell runner with
+# python3 already installed, delete the `image:` line instead.
+
+variables:
+  CRAFT_CI_IMAGE: "python:3.12-slim"
+
+stages:
+  - test
+
+craft-checks:
+  stage: test
+  image: $CRAFT_CI_IMAGE
+  interruptible: true
+  script:
+    - python3 --version
+    # A shell runner may have no pip. tomli is only needed on Python 3.10, and
+    # without it sync_codex_selftest.py reports its TOML parse case as SKIPPED.
+    - |
+      if python3 -m pip --version >/dev/null 2>&1; then
+        python3 -m pip install --disable-pip-version-check -r requirements.txt
+      else
+        echo "pip unavailable; skipping requirements.txt (tomli)"
+      fi
+
+    # 1. The hooks. Proves each one allows and denies the right calls, that every
+    #    entry point fails open on a malformed payload, and that CRAFT_HOOKS=off
+    #    is honoured. This is the job that stops a bad hook reaching a session.
+    - echo "=== hook self-test ==="
+    - python3 scripts/craft_selftest.py
+
+    # 1b. The 0.7 machinery: stack detection, the checks each stack resolves,
+    #     the concurrency verdicts, the language-neutral trace, craft-check's
+    #     summaries and JUnit XML, the deciders (against a local mock server),
+    #     and the snapshot the mod draws.
+    - echo "=== stacks, trace, deciders self-test ==="
+    - python3 scripts/stack_selftest.py
+
+    # 1c. bin/craft-statusline: themes, bars, pace, and that bad input never
+    #     prints a traceback. Needs pytest; skipped where the runner has none.
+    - echo "=== status line ==="
+    - |
+      if python3 -m pytest --version >/dev/null 2>&1; then
+        python3 -m pytest tests/test_craft_statusline.py -q
+      else
+        echo "pytest unavailable; skipping tests/test_craft_statusline.py"
+      fi
+
+    # The mod itself is checked with `claude plugin validate .` and
+    # `claude plugin test`, which need the Claude Code CLI. A runner that has
+    # it can add them here; they make no model call.
+
+    # 2. bin/craft-sync-codex's own behavior: idempotency, drift detection,
+    #    the craft/craft.md collision rule, and that a malformed source fails
+    #    loudly instead of writing a broken file. Runs against a synthetic
+    #    fixture, not this repository's own content.
+    - echo "=== codex sync self-test ==="
+    - python3 scripts/sync_codex_selftest.py
+
+    # 3. The eval suite, read but not run.
+    - echo "=== eval suite, static check ==="
+    - python3 scripts/validate_evals.py
+
+    # 4. The full health report, for the log. It exits 1 here because the
+    #    section 6 commands of config/workflow.md belong to the host repository
+    #    and are never installed beside this plugin, so it does not gate.
+    - echo "=== health report, informational ==="
+    - ./bin/craft-doctor || true
+
+    # 5. The part of the health report this repository does own: the standards
+    #    hashes against SOURCE.lock, the skill and agent inventory against
+    #    config/workflow.md, the hook registration, and whether .agents/skills/,
+    #    .codex/agents/, and AGENTS.md are still in sync with their source (the
+    #    "codex" group -- see bin/craft-sync-codex). This gates.
+    - echo "=== health check, gating ==="
+    - ./bin/craft-doctor --skip commands
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "schedule"

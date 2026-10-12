@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""craft-ui-state - one JSON snapshot of the workflow, for the status band and the board.
+
+The craft mod (hooks/mod/) draws what this prints. It reads only state files
+and the stack detector, never the network, and it is cheap enough to run after
+every tool call that changes something:
+
+    <repo>/.claude/specs/<active>/spec.md, tasks.md     the spec, the criteria, the tasks
+    <repo>/.claude/craft/session.json                   the route and the recorded checks
+    <repo>/.claude/craft/approval.json                  the approval, bound by SHA-256
+    <repo>/.claude/craft/trace.json                     the last bin/craft-spec trace
+    <repo>/.claude/craft/findings.json, reviews.json    review findings and rounds
+    <repo>/.claude/craft/jev.json, deciders.json        the decider switch and choices
+    <repo>/.claude/craft/jev-log.jsonl                  the last decisions
+
+Usage:
+    bin/craft-ui-state [--cwd PATH] [--pretty]
+
+Gate A here is the same rule verify_gates enforces, read from the recorded
+checks: the last trace passed, the last test (or checkpoint) command passed, and
+the last lint, imports, format, types, vet, and race commands that were run
+passed. A check never run is "not run", not green.
+
+Exit code 0, always. Any problem becomes an "error" field.
+"""
+
+import json
+import pathlib
+import re
+import sys
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+import craft_stack  # noqa: E402
+import craft_state  # noqa: E402
+
+CRITERION_ROW = re.compile(r"^\|\s*([A-Z][A-Z0-9]*-\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|")
+SECTION = re.compile(r"^##\s+(.+?)\s*$")
+GATE_A_LABELS = ("tests", "lint", "imports", "format", "types", "vet", "race")
+BLOCKING_SEVERITIES = ("critical", "high")
+OPEN_STATES = ("proposed", "confirmed", "plausible", "open")
+
+
+def argument(argv, flag, default=None):
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def read_json(path, default):
+    try:
+        return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def criteria(spec_text):
+    rows, inside = [], False
+    for line in spec_text.splitlines():
+        heading = SECTION.match(line)
+        if heading:
+            inside = heading.group(1).strip().lower().startswith("acceptance criteria")
+            continue
+        if inside:
+            match = CRITERION_ROW.match(line)
+            if match:
+                text = match.group(2)
+                rows.append({"id": match.group(1), "text": text, "class": match.group(3),
+                             "developer": "[developer]" in text.lower()})
+    return rows
+
+
+def tasks(tasks_text):
+    items, in_comment = [], False
+    for line in tasks_text.splitlines():
+        if "<!--" in line:
+            in_comment = True
+        if in_comment:
+            if "-->" in line:
+                in_comment = False
+            continue
+        match = craft_state.TASK_LINE.match(line)
+        if match:
+            items.append({"done": match.group(1).lower() == "x", "text": match.group(2)})
+    return items
+
+
+def last_by_label(recorded):
+    latest = {}
+    for check in recorded:
+        label = str(check.get("label") or "check")
+        latest[label] = {
+            "exit_code": check.get("exit_code"),
+            "at": check.get("at"),
+            "command": str(check.get("command", ""))[:200],
+            "summary": check.get("summary") or {},
+        }
+    return latest
+
+
+def gate_a(latest, checkpoint, recorded):
+    items = []
+    trace = latest.get("trace")
+    items.append({"name": "trace", "ok": None if trace is None else trace["exit_code"] == 0,
+                  "detail": "not run" if trace is None else "exit %s" % trace["exit_code"]})
+    tests = latest.get("tests")
+    if checkpoint:
+        matching = [check for check in recorded if str(check.get("command", "")).strip() == checkpoint.strip()]
+        if matching:
+            tests = {"exit_code": matching[-1].get("exit_code"), "summary": matching[-1].get("summary") or {}}
+    items.append({"name": "tests", "ok": None if tests is None else tests["exit_code"] == 0,
+                  "detail": "not run" if tests is None else (tests.get("summary") or {})})
+    for label in GATE_A_LABELS[1:]:
+        if label in latest:
+            items.append({"name": label, "ok": latest[label]["exit_code"] == 0,
+                          "detail": latest[label].get("summary") or "exit %s" % latest[label]["exit_code"]})
+    known = [item for item in items if item["ok"] is not None]
+    return {
+        "items": items,
+        "passed": sum(1 for item in items if item["ok"]),
+        "total": len(items),
+        "green": bool(items) and all(item["ok"] for item in items),
+        "started": bool(known),
+    }
+
+
+def gate_b(findings, reviews, spec_name):
+    rounds = [item for item in reviews if not spec_name or item.get("spec") in (spec_name, None, "")]
+    last = rounds[-1] if rounds else None
+    blocking = [finding for finding in findings
+                if str(finding.get("severity", "")).lower() in BLOCKING_SEVERITIES
+                and str(finding.get("state", "open")).lower() in ("confirmed", "open")]
+    proposed = [finding for finding in findings if str(finding.get("state", "")).lower() == "proposed"]
+    if last is None:
+        state = "not run"
+    elif blocking:
+        state = "changes requested"
+    elif last.get("decision") == "APPROVE" and not proposed:
+        state = "green"
+    else:
+        state = "in review"
+    return {"state": state, "green": state == "green", "last_round": last, "blocking": len(blocking),
+            "proposed": len(proposed), "rounds": len(rounds)}
+
+
+def deciders_view(cwd):
+    try:
+        import deciders
+        import jev_client
+
+        config = deciders.load(cwd)
+        log_path = craft_state.state_path("jev-log.jsonl", cwd)
+        last = None
+        cost_total = 0.0
+        decisions = 0
+        try:
+            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
+            for line in lines[-2000:]:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                decisions += 1
+                if isinstance(record.get("cost"), (int, float)):
+                    cost_total += float(record["cost"])
+                last = record
+        except OSError:
+            last = None
+        return {
+            "enabled": jev_client.is_enabled(cwd),
+            "approve": jev_client.is_approve_enabled(cwd),
+            "mode": config.get("mode"),
+            "order": config.get("order") or [],
+            "council": config.get("council") or [],
+            "ready": deciders.available(config),
+            "labels": {name: (data or {}).get("label", name) for name, data in (config.get("providers") or {}).items()},
+            "last": last,
+            "decisions": decisions,
+            "cost_total": round(cost_total, 6),
+        }
+    except Exception as error:
+        return {"enabled": False, "error": type(error).__name__}
+
+
+def snapshot(cwd=None):
+    root = craft_state.host_root(cwd)
+    data = {"version": 1, "at": craft_state.now(), "repo": str(root), "plugin_root": str(PLUGIN_ROOT)}
+    data["stack"] = craft_stack.summary(str(root))
+    spec_name = craft_state.active_spec_name(str(root))
+    state, detail = craft_state.spec_state(str(root))
+    progress = craft_state.spec_progress(str(root))
+    data["session"] = {"active": craft_state.is_active(str(root)), "route": craft_state.current_route(str(root)),
+                       "checkpoint": craft_state.checkpoint_command(str(root))}
+    spec = {"name": spec_name, "state": state, "title": progress.get("title", ""), "risk": progress.get("risk", ""),
+            "sha": (detail.get("sha256") or "")[:8], "approved_at": detail.get("approved_at", ""),
+            "key": "", "criteria": [], "tasks": [], "tasks_state": progress.get("state", ""),
+            "next_task": progress.get("next_task", "")}
+    directory = craft_state.active_spec_dir(str(root))
+    if directory is not None:
+        try:
+            spec_text = (directory / "spec.md").read_text(encoding="utf-8")
+        except OSError:
+            spec_text = ""
+        key = re.search(r"\bKey:\s*([A-Z][A-Z0-9]*)", spec_text)
+        spec["key"] = key.group(1) if key else ""
+        spec["criteria"] = criteria(spec_text)
+        try:
+            spec["tasks"] = tasks((directory / "tasks.md").read_text(encoding="utf-8"))
+        except OSError:
+            pass
+    trace = read_json(craft_state.state_path(craft_state.TRACE_FILE, str(root)), {})
+    if isinstance(trace, dict) and trace.get("spec") == spec_name:
+        mapping = trace.get("criteria") or {}
+        for row in spec["criteria"]:
+            tests_for = mapping.get(row["id"])
+            row["tests"] = tests_for if isinstance(tests_for, list) else None
+        spec["trace_at"] = trace.get("at")
+        spec["traced"] = sum(1 for row in spec["criteria"] if row.get("tests"))
+    data["spec"] = spec
+    recorded = craft_state.checks(str(root))
+    latest = last_by_label(recorded)
+    data["checks"] = latest
+    data["gate_a"] = gate_a(latest, data["session"]["checkpoint"], recorded)
+    findings = [finding for finding in craft_state.read_findings(str(root))
+                if not spec_name or finding.get("spec") in (spec_name, None, "")]
+    data["findings"] = findings[-50:]
+    data["gate_b"] = gate_b(findings, craft_state.read_reviews(str(root)), spec_name)
+    data["deciders"] = deciders_view(str(root))
+    return data
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__.strip())
+        return 0
+    try:
+        data = snapshot(argument(argv, "--cwd"))
+    except Exception as error:
+        data = {"version": 1, "error": "%s: %s" % (type(error).__name__, error)}
+    print(json.dumps(data, indent=2 if "--pretty" in argv else None, ensure_ascii=False, default=str))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

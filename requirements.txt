@@ -1,0 +1,2 @@
+# Python 3.10 compatibility for scripts/sync_codex_selftest.py.
+tomli==2.3.0; python_version < "3.11"

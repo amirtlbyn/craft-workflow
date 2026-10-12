@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""craft-stack - which stacks this repository runs, and what each one needs.
+
+Usage:
+    bin/craft-stack [detect] [--json]
+    bin/craft-stack checks [--stack ID] [--json]
+    bin/craft-stack skills [--paths P ...] [--json]
+    bin/craft-stack concurrency [--stack ID] [--json]
+    bin/craft-stack lens <lens> [--paths P ...]
+    bin/craft-stack globs <money|auth|migrations|models|views|tests>
+    bin/craft-stack for <path>
+    bin/craft-stack set <id>[,<id> ...] | unset
+    bin/craft-stack list
+
+Commands:
+    detect       The stacks found, the directory each owns, and the evidence.
+    checks       The commands that prove Gate A for each stack: tests, lint,
+                 format, types, race, vet. config/workflow.md section 6 and a
+                 host .claude/craft.md still win over these defaults.
+    skills       The skills to load for the stacks of these paths, or of the
+                 whole repository. The stack's concurrency skill is listed
+                 only when the concurrency report says the system is ready.
+    concurrency  The concurrency readiness report: the model this system runs,
+                 the verdict (ready, limited, not-ready), the evidence, what is
+                 allowed, and what to avoid. Run it before writing concurrent
+                 code. A not-ready verdict means: do not introduce it here.
+    lens         The stack-specific part of a review lens, for the stacks of
+                 the paths. Reviewers read it next to the lens file.
+    globs        The globs of one path set, config/paths.json plus every stack.
+    for          Which stack owns one path.
+    set, unset   Override detection for this repository. Written to
+                 .claude/craft/stack.json. CRAFT_STACK=go,node wins over both.
+    list         Every stack pack this plugin ships.
+
+Options:
+    --cwd PATH   Work against the repository that holds PATH.
+    --json       Print JSON.
+
+Exit codes:
+    0   done
+    1   concurrency: the verdict is not-ready
+    2   the arguments are wrong
+"""
+
+import json
+import pathlib
+import sys
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+import craft_stack  # noqa: E402
+import craft_state  # noqa: E402
+
+VERDICT_MARK = {"ready": "✅ ready", "limited": "⚠️  limited", "not-ready": "🚫 not-ready"}
+
+
+def argument(argv, flag, default=None):
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def list_after(argv, flag):
+    if flag not in argv:
+        return []
+    values = []
+    for value in argv[argv.index(flag) + 1:]:
+        if value.startswith("--"):
+            break
+        values.append(value)
+    return values
+
+
+def emit(data, as_json):
+    if as_json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return True
+    return False
+
+
+def entry_for(stack_id, cwd, found):
+    for item in found:
+        if item["id"] == stack_id:
+            return item
+    return {"id": stack_id, "dir": "", "evidence": "asked for"}
+
+
+def command_detect(argv, cwd):
+    found = craft_stack.detect(cwd)
+    primary = craft_stack.primary(cwd, found)
+    data = {"primary": primary, "stacks": found, "override": craft_stack.read_override(cwd)}
+    if emit(data, "--json" in argv):
+        return 0
+    if not found:
+        print("No stack detected. The default stack applies: %s %s" % (
+            craft_stack.pack(primary).get("emoji", ""), primary))
+        print("Override it with: bin/craft-stack set <id>   (bin/craft-stack list)")
+        return 0
+    print("stacks of %s" % craft_state.host_root(cwd))
+    for item in found:
+        data = craft_stack.pack(item["id"])
+        print("  %s %-8s %-28s %s%s" % (
+            data.get("emoji", " "), item["id"], (item["dir"] or ".") + "/", item["evidence"],
+            "   ← primary" if item["id"] == primary and (item["dir"] == "" or len(found) == 1) else ""))
+    return 0
+
+
+def command_checks(argv, cwd):
+    found = craft_stack.detect(cwd)
+    wanted = argument(argv, "--stack")
+    entries = [entry_for(wanted, cwd, found)] if wanted else (found or [entry_for(craft_stack.primary(cwd, found), cwd, found)])
+    data = []
+    for entry in entries:
+        data.append({"stack": entry["id"], "dir": entry["dir"],
+                     "checks": craft_stack.checks_for(entry["id"], cwd, entry["dir"]),
+                     "source": (craft_stack.pack(entry["id"]).get("checks") or {}).get("source", "stack.json")})
+    if emit(data, "--json" in argv):
+        return 0
+    for item in data:
+        print("%s %s %s" % (craft_stack.pack(item["stack"]).get("emoji", ""), item["stack"],
+                            "(%s/)" % item["dir"] if item["dir"] else ""))
+        if item["source"] != "stack.json":
+            print("  defaults below; the real commands are in %s" % item["source"])
+        for label, command in item["checks"].items():
+            print("  %-8s %s" % (label, command))
+        if not item["checks"]:
+            print("  no check applies. Set them in .claude/craft.md")
+    print("Run each through bin/craft-check -- <command>, so Gate A records it.")
+    return 0
+
+
+def command_skills(argv, cwd):
+    paths = list_after(argv, "--paths")
+    skills = craft_stack.skills_for(cwd, paths or None)
+    if emit({"skills": skills, "paths": paths}, "--json" in argv):
+        return 0
+    print(" ".join(skills))
+    return 0
+
+
+def command_concurrency(argv, cwd):
+    found = craft_stack.detect(cwd)
+    wanted = argument(argv, "--stack")
+    entry = entry_for(wanted, cwd, found) if wanted else None
+    report = craft_stack.concurrency(cwd, entry)
+    if emit(report, "--json" in argv):
+        return 1 if report.get("verdict") == "not-ready" else 0
+    data = craft_stack.pack(report.get("stack"))
+    print("🧵 concurrency · %s %s%s · model: %s" % (
+        data.get("emoji", ""), report.get("stack"), " (%s/)" % report["dir"] if report.get("dir") else "",
+        report.get("model")))
+    print("verdict   %s" % VERDICT_MARK.get(report.get("verdict"), report.get("verdict")))
+    print("summary   %s" % report.get("summary"))
+    for line in report.get("evidence") or []:
+        print("evidence  %s" % line)
+    for line in report.get("allowed") or []:
+        print("allowed   ✅ %s" % line)
+    for line in report.get("avoid") or []:
+        print("avoid     🚫 %s" % line)
+    if report.get("skill") and report.get("verdict") == "ready":
+        print("load      skill %s" % report["skill"])
+    if report.get("verdict") != "ready":
+        print("change    %s" % report.get("to_change"))
+    return 1 if report.get("verdict") == "not-ready" else 0
+
+
+def command_lens(argv, cwd):
+    if len(argv) < 1 or argv[0].startswith("--"):
+        sys.stderr.write("lens needs a lens name: spec, style, logic, security, query, concurrency\n")
+        return 2
+    lens = argv[0]
+    paths = list_after(argv, "--paths")
+    found = craft_stack.detect(cwd)
+    if paths:
+        ids = []
+        for path in paths:
+            owner = craft_stack.owner_of(path, cwd, found)
+            if owner and owner["id"] not in ids:
+                ids.append(owner["id"])
+    else:
+        ids = craft_stack.stack_ids(cwd, found)
+    printed = False
+    for stack_id in ids:
+        text = craft_stack.lens_addendum(lens, stack_id)
+        if text:
+            print("## %s %s — %s lens" % (craft_stack.pack(stack_id).get("emoji", ""), stack_id, lens))
+            print(text)
+            print("")
+            printed = True
+    if not printed:
+        print("No stack-specific notes for the %s lens on %s." % (lens, ", ".join(ids)))
+    return 0
+
+
+def command_globs(argv, cwd):
+    if not argv:
+        sys.stderr.write("globs needs a set name\n")
+        return 2
+    key = argv[0]
+    if key == "tests":
+        globs = craft_stack.test_spec(cwd)["globs"]
+    else:
+        globs = craft_stack.globs_for(key, cwd)
+    if emit(globs, "--json" in argv):
+        return 0
+    print("\n".join(globs))
+    return 0
+
+
+def command_for(argv, cwd):
+    if not argv:
+        sys.stderr.write("for needs a path\n")
+        return 2
+    owner = craft_stack.owner_of(argv[0], cwd)
+    if emit(owner, "--json" in argv):
+        return 0
+    if owner:
+        print("%s %s%s" % (craft_stack.pack(owner["id"]).get("emoji", ""), owner["id"],
+                           " (%s/)" % owner["dir"] if owner["dir"] else ""))
+    return 0
+
+
+def command_set(argv, cwd):
+    if not argv:
+        sys.stderr.write("set needs one or more stack ids, comma-separated\n")
+        return 2
+    ids = [part.strip() for part in argv[0].split(",") if part.strip()]
+    unknown = [stack_id for stack_id in ids if stack_id not in craft_stack.load_packs()]
+    if unknown:
+        sys.stderr.write("unknown stack: %s. Known: %s\n" % (", ".join(unknown), ", ".join(craft_stack.load_packs())))
+        return 2
+    if not craft_stack.set_override(ids, cwd):
+        sys.stderr.write("could not write .claude/craft/stack.json\n")
+        return 1
+    print("Stack override set: %s" % ", ".join(ids))
+    return 0
+
+
+def command_unset(argv, cwd):
+    craft_stack.set_override([], cwd)
+    print("Stack override removed. Detection applies again.")
+    return 0
+
+
+def command_list(argv, cwd):
+    packs = craft_stack.load_packs()
+    if emit({key: {"label": value.get("label"), "emoji": value.get("emoji"), "skills": value.get("skills"),
+                   "concurrency_skill": (value.get("concurrency") or {}).get("skill", "")}
+             for key, value in packs.items()}, "--json" in argv):
+        return 0
+    for key, value in sorted(packs.items(), key=lambda item: -int(item[1].get("priority", 0))):
+        concurrency_skill = (value.get("concurrency") or {}).get("skill", "")
+        print("  %s %-8s skills: %s%s" % (value.get("emoji", ""), key, ", ".join(value.get("skills") or []),
+                                         " · concurrency: %s" % concurrency_skill if concurrency_skill else ""))
+    return 0
+
+
+COMMANDS = {
+    "detect": command_detect,
+    "checks": command_checks,
+    "skills": command_skills,
+    "concurrency": command_concurrency,
+    "lens": command_lens,
+    "globs": command_globs,
+    "for": command_for,
+    "set": command_set,
+    "unset": command_unset,
+    "list": command_list,
+}
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cwd = argument(argv, "--cwd")
+    if "--cwd" in argv:
+        index = argv.index("--cwd")
+        argv = argv[:index] + argv[index + 2:]
+    if not argv or argv[0].startswith("--"):
+        return command_detect(argv, cwd)
+    if argv[0] not in COMMANDS:
+        print(__doc__.strip())
+        return 2
+    return COMMANDS[argv[0]](argv[1:], cwd)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

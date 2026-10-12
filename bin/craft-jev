@@ -1,0 +1,692 @@
+#!/usr/bin/env python3
+"""craft-jev - optional fast decisions from Jev, TypeSafe's System One model, via OpenRouter.
+
+Jev answers typed questions with calibrated probabilities in about 0.2 to 0.5
+seconds, for a fraction of a cent. It does not write text and it does not call
+tools. This workflow asks it the routing questions that otherwise cost Claude
+tokens and judgement: which route, which risk tier, which model writes the code,
+which skills to load, and which review lenses a diff needs. Claude then acts on
+the answer.
+
+Jev is off by default. When it is off, or when a call fails, the workflow runs
+exactly as it does without it. A decision is never below the rules floor: the
+deterministic rules in this file (path globs from config/paths.json and a few
+keywords) set a minimum route, risk tier, and lens set that Jev can raise but
+never lower.
+
+Usage:
+    bin/craft-jev on | off | status [--quiet]
+    bin/craft-jev set endpoint URL | set model ID | unset endpoint | unset model
+    bin/craft-jev approve on | off | status
+    bin/craft-jev test
+    bin/craft-jev decide --stage route  --request "TEXT" [--paths P ...] [--json]
+    bin/craft-jev decide --stage review [--base REF] [--request "TEXT"] [--json]
+
+Commands:
+    on        Turn Jev on for this repository. It warns when no API key is found.
+    off       Turn it off. The workflow goes back to Claude's own routing.
+    status    Say whether it is on, where the key comes from, and the endpoint.
+              --quiet prints nothing: exit 0 when on, 1 when off.
+    test      Send one tiny question. Prints the answer, the latency, and the cost.
+    set       Override the endpoint or the model for this repository only.
+              The override lives in .claude/craft/jev.json, so a plugin update
+              does not reset it. unset removes it.
+    approve   Let Jev approve tool calls that would otherwise prompt you. See
+              scripts/jev_approve.py and the "approve" block of config/jev.json.
+    decide    Ask the questions of one stage in config/jev.json, combine the
+              answers with the rules floor, and print the decision.
+
+Options for decide:
+    --stage route|review   route: at the start of a request. review: before a review.
+    --request TEXT         The developer's request, in their words. Truncated to
+                           max_request_chars. --request-file PATH reads it from a file.
+    --no-request-text      Send only paths and counts, never the request text.
+    --paths P ...          Changed or touched paths. On the review stage the
+                           default is `git diff --name-only <base>` plus untracked files.
+    --base REF             The review base. The default is HEAD.
+    --json                 Print the decision as JSON.
+
+What leaves the machine: the request text (unless --no-request-text), the list
+of paths, and line counts. Never file contents. The request asks OpenRouter's
+providers not to collect data ("data_collection": "deny").
+
+The API key comes from OPENROUTER_API_KEY, or from the file
+~/.config/craft-workflow/openrouter.key. It is never written anywhere.
+
+Environment:
+    CRAFT_JEV=on|off       Overrides the per-repository switch.
+    CRAFT_JEV_APPROVE=on|off  Overrides the approval switch.
+    CRAFT_JEV_URL          Overrides every endpoint setting.
+    CRAFT_JEV_MODEL        Overrides every model setting.
+
+Exit codes:
+    0   done. decide exits 0 even when Jev failed and the rules alone decided
+    1   status --quiet: Jev is off. test: the call failed
+    2   the arguments are wrong
+"""
+
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+import craft_stack  # noqa: E402
+import craft_state  # noqa: E402
+import deciders  # noqa: E402
+from jev_client import (  # noqa: E402
+    KEY_FILE,
+    JevError,
+    api_key,
+    call_endpoint,
+    call_jev,
+    choice_of,
+    effective_config,
+    endpoint,
+    is_approve_enabled,
+    is_enabled,
+    load_config,
+    model,
+    noul_probability,
+    read_state,
+    set_enabled,
+    setting,
+    state_path,
+    write_state,
+)
+
+LOG_FILE = "jev-log.jsonl"
+ROUTES = ("quick", "task", "project")
+MODELS = ("haiku", "sonnet", "opus")
+ALWAYS_LENSES = ("spec", "style")
+SKILL_PREFIX = "skill_"
+
+KEYWORDS = {
+    "money": r"\b(money|balances?|wallets?|ledgers?|payments?|payouts?|withdraw\w*|deposit\w*|"
+    r"transfers?|settlements?|commissions?|fees?|refunds?|invoices?|credits?|debits?)\b",
+    "auth": r"\b(auth\w*|permissions?|login|logout|passwords?|tokens?|otp|2fa|roles?|"
+    r"access control|sessions?)\b",
+    "migration": r"\b(migrations?|schema|add (?:a )?(?:column|field|index)|alter table|backfill)\b",
+    "concurrency": r"\b(race|concurren\w*|locks?|locking|idempoten\w*|retr(?:y|ies)|"
+    r"select_for_update|duplicate delivery)\b",
+    "integration": r"\b(integrations?|webhooks?|third[- ]party|external api|provider api)\b",
+}
+# Asks for concurrency for throughput. It forces at least task, not risk high:
+# the concurrency skill decides whether the system is built for it.
+THROUGHPUT_WORDS = (r"\b(async\w*|parallel\w*|goroutines?|worker pools?|thread pools?|threads?|"
+                    r"high concurrency|throughput|fan[- ]out|non[- ]blocking|reactive)\b")
+# Added lines that start concurrent work, in any stack. Read locally from the
+# diff to route the concurrency lens. Never sent anywhere.
+CONCURRENCY_CODE = re.compile(
+    r"^\+.*(\basync\s+def\b|\basyncio\.|\bawait\s+asyncio|TaskGroup|\bgather\(|create_task\(|"
+    r"run_in_threadpool|to_thread\(|\bgo\s+func\b|\bgo\s+[\w.]+\(|errgroup|sync\.WaitGroup|chan\s|make\(chan|"
+    r"CompletableFuture|ExecutorService|Executors\.|@Async|parallelStream|\bMono<|\bFlux<|VirtualThread|"
+    r"Promise\.(all|allSettled|race|any)\(|worker_threads|new Worker\(|ThreadPoolExecutor|threading\.Thread)",
+    re.M,
+)
+SERVICE_FILE = re.compile(r"(^|/)(services?|tasks?|workers?|jobs?|[\w.-]*_service|[\w.-]*Service|[\w.-]*\.service)"
+                          r"\.(py|go|java|kt|ts|js)$")
+
+
+# ---------------------------------------------------------------------------
+# Configuration and state
+# ---------------------------------------------------------------------------
+
+
+def git_lines(arguments, cwd):
+    """Return the output lines of a git command, or [] on any problem."""
+    try:
+        completed = subprocess.run(
+            ["git"] + arguments,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+        if completed.returncode != 0:
+            return []
+        return [line for line in completed.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def changed_paths(base, cwd):
+    """Return the paths changed against base, plus untracked files."""
+    paths = git_lines(["diff", "--name-only", base], cwd)
+    for path in git_lines(["ls-files", "--others", "--exclude-standard"], cwd):
+        if path not in paths:
+            paths.append(path)
+    return [path for path in paths if not path.startswith(".claude/")]
+
+
+def diff_counts(base, cwd):
+    """Return {"files", "insertions", "deletions"} for the diff against base."""
+    counts = {"files": 0, "insertions": 0, "deletions": 0}
+    for line in git_lines(["diff", "--numstat", base], cwd):
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            counts["files"] += 1
+            for key, value in (("insertions", parts[0]), ("deletions", parts[1])):
+                if value.isdigit():
+                    counts[key] += int(value)
+    return counts
+
+
+# ---------------------------------------------------------------------------
+# The rules floor
+# ---------------------------------------------------------------------------
+
+
+def keyword_hits(text):
+    """Return {category: first matching word} for the request text."""
+    hits = {}
+    lowered = (text or "").lower()
+    for category, pattern in KEYWORDS.items():
+        match = re.search(pattern, lowered)
+        if match:
+            hits[category] = match.group(0)
+    return hits
+
+
+def path_hits(paths, cwd=None):
+    """Return {glob set: [paths]} for config/paths.json plus every detected stack's globs."""
+    hits = {}
+    found = craft_stack.detect(cwd)
+    for key in ("money", "auth", "migrations", "models", "views", "tests"):
+        if key == "tests":
+            globs = craft_stack.test_spec(cwd, found)["globs"]
+        else:
+            globs = craft_stack.globs_for(key, cwd, found)
+        matched = [path for path in paths if craft_state.path_matches(path, globs)]
+        if matched:
+            hits[key] = matched
+    return hits
+
+
+def added_lines(base, cwd):
+    """Return the lines the working tree adds since base, as diff text. '' on any problem."""
+    try:
+        completed = subprocess.run(
+            ["git", "diff", "-U0", base], cwd=str(cwd), stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=10,
+        )
+        return completed.stdout.decode("utf-8", errors="replace")[:400000]
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def rules_floor(stage, request, paths, cwd=None, diff_text=""):
+    """Return the deterministic minimum decision, with its reasons."""
+    words = keyword_hits(request)
+    files = path_hits(paths, cwd)
+    floor = {
+        "route": "quick",
+        "risk_high": False,
+        "lenses": set(ALWAYS_LENSES) if stage == "review" else set(),
+        "implementer_min": "haiku",
+        "reasons": [],
+    }
+
+    def promote(route, reason):
+        if ROUTES.index(route) > ROUTES.index(floor["route"]):
+            floor["route"] = route
+        floor["reasons"].append(reason)
+
+    for category in ("money", "auth", "migration", "concurrency", "integration"):
+        if category in words:
+            floor["risk_high"] = True
+            promote("task", "%s word %r" % (category, words[category]))
+    if "migrations" in files:
+        floor["risk_high"] = True
+        promote("project", "migration file %s" % files["migrations"][0])
+    for key in ("money", "auth"):
+        if key in files:
+            floor["risk_high"] = True
+            promote("task", "%s path %s" % (key, files[key][0]))
+    throughput = re.search(THROUGHPUT_WORDS, (request or "").lower())
+    if throughput:
+        promote("task", "concurrency word %r: load the concurrency skill" % throughput.group(0))
+    if floor["risk_high"]:
+        floor["implementer_min"] = "sonnet"
+    try:
+        floor["stack_skills"] = craft_stack.skills_for(cwd, paths or None)
+    except Exception:
+        floor["stack_skills"] = []
+    if throughput and "concurrency" not in floor["stack_skills"]:
+        floor["stack_skills"].insert(0, "concurrency")
+
+    if stage == "review":
+        if files.keys() & {"money", "migrations", "tests"}:
+            floor["lenses"].add("logic")
+        if any(SERVICE_FILE.search(path) for path in paths):
+            floor["lenses"].add("logic")
+        if diff_text and CONCURRENCY_CODE.search(diff_text):
+            floor["lenses"].add("concurrency")
+            floor["reasons"].append("the diff adds concurrent code")
+        if files.keys() & {"views", "auth"}:
+            floor["lenses"].add("security")
+        if files.keys() & {"models", "migrations"}:
+            floor["lenses"].add("query")
+    return floor
+
+
+# ---------------------------------------------------------------------------
+# The Jev call
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Combining the answers with the floor
+# ---------------------------------------------------------------------------
+
+
+def combine(stage, floor, answers, config):
+    """Return the final decision. answers is None when Jev was not used."""
+    threshold = float(config.get("confidence_threshold", 0.7))
+    noul_threshold = float(config.get("noul_threshold", 0.5))
+    answers = answers or {}
+    decision = {"stage": stage, "items": {}, "floor_reasons": floor["reasons"]}
+
+    risk_p = noul_probability(answers.get("risk_high"))
+    risk = floor["risk_high"] or (risk_p is not None and risk_p >= noul_threshold)
+    decision["items"]["risk"] = {
+        "value": "high" if risk else "low",
+        "jev": risk_p,
+        "rules": floor["risk_high"],
+    }
+
+    if stage == "route":
+        route, confidence = choice_of(answers.get("route"))
+        item = {"jev": route, "confidence": confidence, "floor": floor["route"]}
+        if route in ROUTES and confidence >= threshold:
+            final = ROUTES[max(ROUTES.index(route), ROUTES.index(floor["route"]))]
+            item["value"] = final
+            item["source"] = "jev" if final == route else "rules floor"
+        else:
+            item["value"] = None
+            item["source"] = "undecided"
+        decision["items"]["route"] = item
+
+        model, confidence = choice_of(answers.get("implementer_model"))
+        minimum = "sonnet" if risk else floor["implementer_min"]
+        item = {"jev": model, "confidence": confidence, "minimum": minimum}
+        if model in MODELS and confidence >= threshold:
+            item["value"] = MODELS[max(MODELS.index(model), MODELS.index(minimum))]
+            item["source"] = "jev" if item["value"] == model else "rules floor"
+        else:
+            item["value"] = "sonnet" if MODELS.index(minimum) <= 1 else minimum
+            item["source"] = "default"
+        decision["items"]["implementer_model"] = item
+
+        skills = []
+        for name, answer in answers.items():
+            if not name.startswith(SKILL_PREFIX):
+                continue
+            probability = noul_probability(answer)
+            if probability is not None and probability >= noul_threshold:
+                skills.append(name[len(SKILL_PREFIX) :].replace("_", "-"))
+        decision["items"]["skills"] = {"value": sorted(skills)}
+        # The stack's own skills come from bin/craft-stack, deterministically,
+        # whatever the deciders said. They are listed apart from the deciders' picks.
+        decision["items"]["stack_skills"] = {"value": list(floor.get("stack_skills") or [])}
+    else:
+        lenses = set(floor["lenses"])
+        detail = {}
+        for lens in ("logic", "security", "query", "concurrency"):
+            probability = noul_probability(answers.get("lens_%s" % lens))
+            detail[lens] = probability
+            if probability is not None and probability >= noul_threshold:
+                lenses.add(lens)
+        order = ["spec", "style", "logic", "security", "query", "concurrency"]
+        decision["items"]["lenses"] = {"value": [lens for lens in order if lens in lenses], "jev": detail}
+        if risk:
+            reviewer = [lens for lens in order if lens in lenses and lens not in ("logic", "security")]
+            deep = [lens for lens in ("logic", "security") if lens in lenses] or ["logic"]
+        else:
+            reviewer = [lens for lens in order if lens in lenses]
+            deep = []
+        decision["items"]["reviewer"] = {"value": reviewer}
+        decision["items"]["deep_reviewer"] = {"value": deep}
+    return decision
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+def argument(argv, flag, default=None):
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def list_after(argv, flag):
+    """Return the values after flag, up to the next --option."""
+    if flag not in argv:
+        return []
+    values = []
+    for value in argv[argv.index(flag) + 1 :]:
+        if value.startswith("--"):
+            break
+        values.append(value)
+    return values
+
+
+def write_log(cwd, record):
+    """Append one decision to .claude/craft/jev-log.jsonl. Never raises."""
+    try:
+        path = craft_state.state_path(LOG_FILE, cwd)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(str(path), "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def command_switch(enabled, cwd):
+    if not set_enabled(enabled, cwd):
+        sys.stderr.write("Could not write %s\n" % state_path(cwd))
+        return 1
+    if not enabled:
+        print("Jev is off for this repository. Routing goes back to Claude and config/workflow.md.")
+        return 0
+    key, source = api_key()
+    config = effective_config(cwd)
+    print("Jev is on for this repository.")
+    print("  model     %s" % config.get("model", "?"))
+    print("  endpoint  %s" % endpoint(config, cwd))
+    if key:
+        print("  key       from %s" % source)
+    else:
+        print("  key       NOT FOUND. Set OPENROUTER_API_KEY, or write the key to")
+        print("            %s (chmod 600)." % KEY_FILE)
+        print("            Until then every decision falls back to the rules floor.")
+    print("Run `craft-jev test` to check the connection.")
+    return 0
+
+
+def command_status(argv, cwd):
+    enabled = is_enabled(cwd)
+    if "--quiet" in argv:
+        return 0 if enabled else 1
+    config = load_config()
+    key, source = api_key()
+    url, url_source = setting("endpoint", config, cwd)
+    model_id, model_source = setting("model", config, cwd)
+    print("jev        %s%s" % ("on" if enabled else "off",
+                               " (CRAFT_JEV override)" if os.environ.get("CRAFT_JEV") else ""))
+    print("approve    %s" % ("on — Jev may approve tool calls" if is_approve_enabled(cwd) else "off"))
+    print("model      %s  (from %s)" % (model_id or "typesafe/jev-1.13", model_source))
+    print("endpoint   %s  (from %s)" % (url, url_source))
+    print("key        %s" % ("from " + source if key else "not found"))
+    print("threshold  choice confidence %.2f · noul %.2f · approve %.2f"
+          % (float(config.get("confidence_threshold", 0.7)), float(config.get("noul_threshold", 0.5)),
+             float((config.get("approve") or {}).get("confidence_threshold", 0.9))))
+    return 0
+
+
+def command_set(argv, cwd, unset=False):
+    """craft-jev set endpoint|model VALUE, or craft-jev unset endpoint|model."""
+    if not argv or argv[0] not in ("endpoint", "model"):
+        sys.stderr.write("use: craft-jev set endpoint URL | set model ID | unset endpoint | unset model\n")
+        return 2
+    name = argv[0]
+    if unset:
+        value = None
+    else:
+        if len(argv) < 2 or not argv[1].strip():
+            sys.stderr.write("set %s needs a value\n" % name)
+            return 2
+        value = argv[1].strip()
+        if name == "endpoint" and not value.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+            sys.stderr.write("The endpoint must be an https:// URL, so the API key never travels in clear text.\n")
+            return 2
+    if not write_state({name: value}, cwd):
+        sys.stderr.write("Could not write %s\n" % state_path(cwd))
+        return 1
+    current, source = setting(name, load_config(), cwd)
+    print("%s for this repository: %s  (from %s)" % (name, current, source))
+    if os.environ.get({"endpoint": "CRAFT_JEV_URL", "model": "CRAFT_JEV_MODEL"}[name]):
+        print("Note: an environment variable is set, and it still wins over this setting.")
+    return 0
+
+
+def command_approve(argv, cwd):
+    """craft-jev approve on|off|status."""
+    word = argv[0] if argv else "status"
+    if word == "status":
+        print("approve    %s" % ("on" if is_approve_enabled(cwd) else "off"))
+        if read_state(cwd).get("approve") and not is_enabled(cwd):
+            print("           switched on, but Jev itself is off, so nothing is approved")
+        return 0
+    if word not in ("on", "off"):
+        sys.stderr.write("use: craft-jev approve on | off | status\n")
+        return 2
+    if not write_state({"approve": word == "on"}, cwd):
+        sys.stderr.write("Could not write %s\n" % state_path(cwd))
+        return 1
+    if word == "off":
+        print("Jev no longer approves tool calls here. Claude Code asks you as usual.")
+        return 0
+    approve = load_config().get("approve") or {}
+    print("Jev may now approve tool calls in this repository.")
+    print("  It can only turn a permission prompt into an approval. It never")
+    print("  approves a call on the always-ask or deny lists in config/jev.json,")
+    print("  and it needs confidence %.2f or more." % float(approve.get("confidence_threshold", 0.9)))
+    print("  Every decision goes to .claude/craft/jev-approvals.jsonl.")
+    if not is_enabled(cwd):
+        print("  Jev itself is off. Run `craft-jev on` too, or nothing changes.")
+    if not api_key()[0]:
+        print("  No API key found, so every call falls back to your normal prompt.")
+    return 0
+
+
+def command_test(argv, cwd):
+    config = effective_config(cwd)
+    key, _source = api_key()
+    if not key:
+        sys.stderr.write("No API key. Set OPENROUTER_API_KEY or write %s\n" % KEY_FILE)
+        return 1
+    questions = {
+        "is_bug": {
+            "type": "noul",
+            "instructions": "Is the developer reporting a software defect?",
+            "criteria": {"true": "Something is broken.", "false": "A question or a feature request."},
+        }
+    }
+    try:
+        answers, meta = call_jev(
+            config, questions, "The login page returns a 500 error after the last deploy.", key, endpoint(config, cwd)
+        )
+    except JevError as error:
+        print("Jev test FAILED: %s" % error)
+        return 1
+    print("Jev test OK")
+    print("  answer    is_bug = %s" % noul_probability(answers.get("is_bug")))
+    print("  latency   %d ms · attempts %d" % (meta["latency_ms"], meta["attempts"]))
+    print("  cost      %s · provider %s" % (meta.get("cost"), meta.get("provider")))
+    return 0
+
+
+def command_decide(argv, cwd):
+    stage = str(argument(argv, "--stage", "") or "").strip().lower()
+    if stage not in ("route", "review"):
+        sys.stderr.write("decide needs --stage route or --stage review\n")
+        return 2
+    config = effective_config(cwd)
+    root = craft_state.host_root(cwd)
+
+    request = argument(argv, "--request", "") or ""
+    request_file = argument(argv, "--request-file")
+    if request_file:
+        try:
+            request = pathlib.Path(request_file).read_text(encoding="utf-8")
+        except OSError as error:
+            sys.stderr.write("Could not read %s: %s\n" % (request_file, error))
+            return 2
+    request = request.strip()[: int(config.get("max_request_chars", 2000))]
+
+    base = argument(argv, "--base", "HEAD") or "HEAD"
+    paths = list_after(argv, "--paths")
+    if not paths and stage == "review":
+        paths = changed_paths(base, root)
+    paths = paths[: int(config.get("max_paths", 200))]
+    counts = diff_counts(base, root) if stage == "review" else {}
+
+    diff_text = added_lines(base, root) if stage == "review" else ""
+    floor = rules_floor(stage, request, paths, cwd=cwd, diff_text=diff_text)
+    enabled = is_enabled(cwd)
+    decider_config = deciders.load(cwd)
+    ready = deciders.available(decider_config)
+    answers, meta, failure = None, {}, ""
+
+    if enabled and ready:
+        state = {"stage": stage, "paths": paths}
+        if request and "--no-request-text" not in argv:
+            state["request"] = request
+        if counts:
+            state["diff"] = counts
+        questions = ((config.get("stages") or {}).get(stage) or {})
+        mock = argument(argv, "--mock-response")
+        try:
+            if mock:
+                payload = json.loads(pathlib.Path(mock).read_text(encoding="utf-8"))
+                answers, meta = payload.get("answers") or {}, {"latency_ms": 0, "cost": 0, "attempts": 0,
+                                                               "model": "mock"}
+            elif not questions:
+                raise JevError("config/jev.json defines no questions for stage %s" % stage)
+            else:
+                answers, meta = deciders.ask(questions, state, cwd=cwd, jev_config=config, config=decider_config)
+        except (JevError, OSError, ValueError) as error:
+            failure = str(error)
+            answers = None
+    elif enabled:
+        failure = ("no API key" if deciders.chain(decider_config) == ["jev"]
+                   else "no API key, and no decider is ready: run bin/craft-decide status")
+
+    decision = combine(stage, floor, answers, config)
+    if answers is not None:
+        decision["source"] = "jev" if meta.get("provider") in ("jev", None) and meta.get("mode") != "council" \
+            else "deciders"
+    elif enabled:
+        decision["source"] = "rules only — the deciders failed: %s" % failure if failure.startswith("no decider") \
+            or "council" in failure else "rules only — Jev failed: %s" % failure
+    else:
+        decision["source"] = "rules only — Jev is off"
+    decision["meta"] = meta
+
+    write_log(
+        cwd,
+        {
+            "at": craft_state.now(),
+            "stage": stage,
+            "source": decision["source"],
+            "paths": len(paths),
+            "items": {name: item.get("value") for name, item in decision["items"].items()},
+            "latency_ms": meta.get("latency_ms"),
+            "cost": meta.get("cost"),
+            "provider": meta.get("provider"),
+            "mode": meta.get("mode"),
+            "votes": meta.get("votes"),
+            "failures": meta.get("failures") or None,
+        },
+    )
+
+    if "--json" in argv:
+        print(json.dumps(decision, indent=2, default=list))
+        return 0
+    print_decision(decision)
+    return 0
+
+
+def fmt_p(value):
+    return "—" if value is None else "%.2f" % value
+
+
+def print_decision(decision):
+    meta = decision.get("meta") or {}
+    source = decision["source"]
+    if source == "jev":
+        source = "jev (%s, %s ms, cost %s)" % (meta.get("model"), meta.get("latency_ms"), meta.get("cost"))
+    elif source == "deciders":
+        if meta.get("mode") == "council":
+            source = "council of %s (%s ms)" % (", ".join(meta.get("members") or []), meta.get("latency_ms"))
+        else:
+            source = "%s (%s, %s ms, cost %s)" % (meta.get("label") or meta.get("provider"), meta.get("model"),
+                                                  meta.get("latency_ms"), meta.get("cost"))
+    print("jev decision · stage %s · %s" % (decision["stage"], source))
+    items = decision["items"]
+    risk = items["risk"]
+    consulted = decision["source"] in ("jev", "deciders")
+    print("  risk          %-8s jev %s · rules %s" % (risk["value"], fmt_p(risk["jev"]) if consulted else "—", "yes" if risk["rules"] else "no"))
+    if decision["stage"] == "route" and not consulted:
+        print("  route         floor %s. Decide with config/workflow.md section 2, never below it."
+              % items["route"]["floor"])
+        print("  implementer   at least %s" % items["implementer_model"]["minimum"])
+        stack_skills = (items.get("stack_skills") or {}).get("value") or []
+        if stack_skills:
+            print("  stack skills  %s" % ", ".join(stack_skills))
+    elif decision["stage"] == "route":
+        route = items["route"]
+        if route["value"]:
+            print("  route         %-8s jev %s %s · floor %s · %s"
+                  % (route["value"], route["jev"], fmt_p(route["confidence"]), route["floor"], route["source"]))
+        else:
+            print("  route         UNDECIDED  jev %s %s is below the threshold · floor %s."
+                  % (route["jev"] or "—", fmt_p(route["confidence"]), route["floor"]))
+            print("                Decide with config/workflow.md section 2, never below the floor.")
+        model = items["implementer_model"]
+        print("  implementer   %-8s jev %s %s · minimum %s · %s"
+              % (model["value"], model["jev"] or "—", fmt_p(model["confidence"]), model["minimum"], model["source"]))
+        skills = items["skills"]["value"]
+        stack_skills = (items.get("stack_skills") or {}).get("value") or []
+        print("  stack skills  %s" % (", ".join(stack_skills) if stack_skills else "none detected"))
+        print("  load skills   %s" % (", ".join(skills) if skills else "none beyond the stack's"))
+    if decision["stage"] == "review":
+        print("  lenses        %s" % ", ".join(items["lenses"]["value"]))
+        print("  reviewer      %s" % ", ".join(items["reviewer"]["value"]))
+        deep = items["deep_reviewer"]["value"]
+        print("  deep-reviewer %s" % (", ".join(deep) if deep else "not needed (risk low)"))
+    if decision["floor_reasons"]:
+        print("  rules floor   %s" % "; ".join(decision["floor_reasons"][:4]))
+    print("  binding       never below the rules floor. The developer can still say \"use route X\".")
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    cwd = argument(argv, "--cwd")
+    command = argv[0]
+    if command == "on":
+        return command_switch(True, cwd)
+    if command == "off":
+        return command_switch(False, cwd)
+    if command == "status":
+        return command_status(argv[1:], cwd)
+    if command == "test":
+        return command_test(argv[1:], cwd)
+    if command == "decide":
+        return command_decide(argv[1:], cwd)
+    if command == "set":
+        return command_set(argv[1:], cwd)
+    if command == "unset":
+        return command_set(argv[1:], cwd, unset=True)
+    if command == "approve":
+        return command_approve(argv[1:], cwd)
+    sys.stderr.write("Unknown command %r. Use on, off, status, test, decide, set, unset, or approve.\n" % command)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

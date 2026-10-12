@@ -1,0 +1,183 @@
+{
+  "id": "go",
+  "label": "Go",
+  "emoji": "🐹",
+  "language": "go",
+  "priority": 60,
+  "detect": {
+    "any_file": [
+      "go.mod"
+    ]
+  },
+  "source_extensions": [
+    ".go"
+  ],
+  "tests": {
+    "globs": [
+      "*_test.go"
+    ],
+    "extensions": [
+      ".go"
+    ],
+    "id_rule": "Put the criterion ID first in the subtest name or in the comment above the test: t.Run(\"WDL-3 two withdrawals race\", ...) or // WDL-3: Given ..., when ..., then ...."
+  },
+  "checks": {
+    "tests": [
+      {
+        "run": "go test ./..."
+      }
+    ],
+    "race": [
+      {
+        "run": "go test -race ./..."
+      }
+    ],
+    "vet": [
+      {
+        "run": "go vet ./..."
+      }
+    ],
+    "lint": [
+      {
+        "when_any_file": [
+          ".golangci.yml",
+          ".golangci.yaml",
+          ".golangci.toml",
+          ".golangci.json"
+        ],
+        "run": "golangci-lint run ./..."
+      },
+      {
+        "run": "golangci-lint run ./..."
+      }
+    ],
+    "format": [
+      {
+        "run": "test -z \"$(gofmt -l .)\""
+      }
+    ]
+  },
+  "paths": {
+    "money": [
+      "*/wallet*/*",
+      "*/ledger/*",
+      "*/payment*/*",
+      "*/payout*/*",
+      "*/withdraw*/*",
+      "*/deposit*/*",
+      "*/transfer*/*",
+      "*/settlement*/*",
+      "*/billing/*",
+      "*balance*.go",
+      "*fee*.go",
+      "*commission*.go"
+    ],
+    "auth": [
+      "*/auth/*",
+      "auth/*",
+      "*/authn/*",
+      "*/authz/*",
+      "*/security/*",
+      "*auth*.go",
+      "*jwt*.go",
+      "*token*.go",
+      "*otp*.go",
+      "*password*.go",
+      "*permission*.go",
+      "*middleware*/*auth*"
+    ],
+    "migrations": [
+      "migrations/*",
+      "*/migrations/*",
+      "db/migrations/*",
+      "*/db/migrations/*",
+      "*.up.sql",
+      "*.down.sql",
+      "schema/*.sql",
+      "*/schema/*.sql"
+    ],
+    "models": [
+      "*/model/*.go",
+      "*/models/*.go",
+      "*/entity/*.go",
+      "*/repository/*.go",
+      "*/repo/*.go",
+      "*/store/*.go",
+      "*/storage/*.go",
+      "*_repository.go",
+      "*_repo.go",
+      "*_store.go",
+      "*.sql",
+      "sqlc.yaml",
+      "*/query/*.sql"
+    ],
+    "views": [
+      "*/handler/*.go",
+      "*/handlers/*.go",
+      "*/http/*.go",
+      "*/api/*.go",
+      "*/server/*.go",
+      "*/transport/*.go",
+      "*/grpc/*.go",
+      "*_handler.go",
+      "*_controller.go",
+      "*.proto"
+    ]
+  },
+  "toolchain": [
+    {
+      "id": "go",
+      "purpose": "The Go toolchain itself: go test, go vet, gofmt.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "go"
+        }
+      ]
+    },
+    {
+      "id": "lint",
+      "purpose": "golangci-lint runs staticcheck, errcheck, govet and more in one pass.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "golangci-lint",
+          "go": "github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"
+        }
+      ]
+    },
+    {
+      "id": "junit",
+      "purpose": "gotestsum prints a short summary and writes JUnit XML for craft-check.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "gotestsum",
+          "go": "gotest.tools/gotestsum@latest"
+        }
+      ]
+    },
+    {
+      "id": "lsp",
+      "purpose": "The Go language server, for real diagnostics.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "gopls",
+          "go": "golang.org/x/tools/gopls@latest"
+        }
+      ]
+    }
+  ],
+  "skills": [
+    "go-practices"
+  ],
+  "standards": [
+    "go_standards"
+  ],
+  "concurrency": {
+    "skill": "go-concurrency",
+    "note": "Goroutines are native, cheap, and easy to leak. Every goroutine needs an owner, a way to stop, and a bound. go test -race is part of Gate A whenever a change starts a goroutine or shares memory."
+  },
+  "lenses": "stacks/go/lenses.md"
+}

@@ -1,0 +1,37 @@
+---
+description: Scan existing code for over-engineering and propose deletions or simplifications
+argument-hint: <file, directory, or empty for the current diff>
+---
+
+Audit the code in:
+
+$ARGUMENTS
+
+With no argument, audit the current uncommitted diff. Name a directory to audit
+a whole area of the repository.
+
+Load `minimal-code` and walk its ladder backwards over every function, class,
+and module in scope. For each item, report the class and the verdict:
+
+- `reuse <file>:<line>` — the codebase already has it
+- `stdlib` or `framework: <feature>` — a built-in does it
+- `inline` — used once, no reason to be a helper
+- `remove` — no caller, no criterion, or only a speculative future use
+- `keep` — the exemptions apply (auth, money, transactions, constraints,
+  state-machine guards, or performance code on a hot or growing path), or a
+  spec criterion needs it
+
+Never propose removing an index, a bulk or batch path, a bound, a retry or
+timeout, or a lock to save lines. If the audit finds the opposite problem, a
+naive per-row loop or an unbounded query, report it as `perf` and name the
+faster form.
+
+Find candidates with `Grep`, `rg`, and `ast-grep`. Confirm "no caller" with a
+search before you report `remove`. When `ast-grep` finds nothing, confirm with
+`rg`.
+
+Group the output by verdict, with a one-line reason for each item that is not
+`keep`. Put the estimated lines saved at the end.
+
+**Propose. Do not delete or edit.** Removing existing code needs the developer's
+approval, and you present the list first.

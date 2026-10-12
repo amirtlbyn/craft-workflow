@@ -1,0 +1,56 @@
+{
+  "name": "craft-workflow",
+  "version": "0.7.0",
+  "description": "Spec-driven, cost-routed engineering workflow for any backend stack (Django, FastAPI, Go, Java, Node): three routes by size, a hook-enforced spec gate approved once and bound by hash, gates derived from the spec, a concurrency readiness gate, pluggable AI deciders (Jev, free tiers, local models, Claude Haiku), and a Claude Code mod with the status at the top, a craft board, and cost per agent.",
+  "author": {
+    "name": "Amirhossein Talebian"
+  },
+  "keywords": [
+    "spec-driven",
+    "workflow",
+    "code-review",
+    "testing",
+    "planning",
+    "architecture",
+    "python",
+    "django",
+    "fastapi",
+    "go",
+    "java",
+    "node",
+    "typescript",
+    "concurrency",
+    "mod"
+  ],
+  "displayName": "Craft Workflow",
+  "license": "MIT",
+  "homepage": "https://github.com/amirtlbyn/craft-workflow",
+  "repository": "https://github.com/amirtlbyn/craft-workflow.git",
+  "hooks": "./hooks/mod.json",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "status": {
+      "type": "string",
+      "title": "Where the craft status shows",
+      "description": "top: the header of the craft board, docked at the top right of a wide fullscreen terminal, and the band above the prompt when the board has no room. prompt: the band above the prompt only. both: both.",
+      "default": "top",
+      "options": [
+        "top",
+        "prompt",
+        "both"
+      ]
+    },
+    "auto_check": {
+      "type": "boolean",
+      "title": "Run test commands through craft-check",
+      "description": "Rewrites a test command Claude runs (pytest, go test, mvn test, npm test, ...) to go through bin/craft-check, so Gate A records it. Off by default: a permission rule written for the bare command no longer matches the rewritten one.",
+      "default": false
+    },
+    "gate_question": {
+      "type": "boolean",
+      "title": "Ask instead of refusing at the spec gate",
+      "description": "When Claude tries to write code before the spec is approved, ask the developer: open the spec, approve it, or keep it blocked.",
+      "default": true
+    }
+  }
+}

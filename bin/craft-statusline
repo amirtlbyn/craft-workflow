@@ -1,0 +1,658 @@
+#!/usr/bin/env python3
+"""craft-statusline - Claude Code's status line, with the craft state and usage detail.
+
+Claude Code runs it on every refresh with a JSON object on stdin (the model, the
+context window, the 5-hour and 7-day rate limits, the session cost) and draws
+what it prints. The craft state comes from bin/craft-ui-state, which only reads.
+
+    🛠 Opus · high · ⎇ main │ craft task · CSL ✓ approved · A trace ✓ tests ✗ · B ○ · 3/7
+    🧠 ctx ███▎···· 42% 84k/200k │ ⏱ 5h ██████▏┃·· 62% ↻1h10m pace 77% │ 📅 7d █▊·┃······ 18% ↻4d6h pace 39%
+    💰 $1.23 · $2.11/h · 35m (api 12m) · +120 −8 · in 1.2M out 45k · cache 93%
+
+The bar marker (┃) is where usage would be if it grew evenly over the window,
+and "⚠ full in 40m" is added when the current rate reaches 100% before the
+window resets.
+
+Settings (Claude Code's settings.json):
+
+    "statusLine": {"type": "command", "refreshInterval": 60,
+                   "command": "python3 <plugin root>/bin/craft-statusline --detail"}
+
+Usage:
+    bin/craft-statusline [--theme=NAME] [--bar=STYLE] [--detail]   (JSON on stdin)
+    bin/craft-statusline --preview [--bar=STYLE] [--detail]
+
+Options (a flag wins over its environment variable):
+    --theme=NAME   CRAFT_STATUSLINE_THEME     craft (default), minimal, neon, ocean, dracula, nord,
+                                              catppuccin, gruvbox, tokyo-night, mono
+    --bar=STYLE    CRAFT_STATUSLINE_BAR       gradient-pill, pill, gradient, blocks, smooth, dots,
+                                              line, squares, braille, ascii (default: the theme's own)
+    --detail       CRAFT_STATUSLINE_DETAIL=1  a third line: cost, rate, time, lines, tokens, cache
+    --preview      print every theme and bar style on sample data
+    NO_COLOR       no ANSI colour
+
+An unknown theme or bar style falls back to the default. Exit code 0, always.
+"""
+
+import json
+import math
+import os
+import pathlib
+import subprocess
+import sys
+import time
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+UI_STATE = PLUGIN_ROOT / "bin" / "craft-ui-state"
+UI_STATE_TIMEOUT_S = 3
+GIT_TIMEOUT_S = 1
+
+ESC = "\x1b["
+RESET = ESC + "0m"
+
+# (label, rate_limits key, window length in seconds)
+WINDOWS = (("5h", "five_hour", 5 * 3600), ("7d", "seven_day", 7 * 86400))
+
+# Bar styles: the filled cell and the empty cell. The smooth styles also draw
+# eighths; a pill draws on the theme's background track; a gradient colours each
+# filled cell by its place on the theme's ramp.
+BARS = {
+    "gradient-pill": ("█", " "),
+    "pill": ("█", " "),
+    "gradient": ("█", "░"),
+    "blocks": ("█", "░"),
+    "smooth": ("█", " "),
+    "dots": ("●", "○"),
+    "line": ("━", "─"),
+    "squares": ("■", "□"),
+    "braille": ("⣿", "⣀"),
+    "ascii": ("#", "-"),
+}
+SMOOTH_STYLES = {"smooth", "pill", "gradient-pill"}
+PILL_STYLES = {"pill", "gradient-pill"}
+GRADIENT_STYLES = {"gradient", "gradient-pill"}
+# Without colour a pill has no track, so its empty cells draw this rail.
+PILL_RAIL = "·"
+SMOOTH_EIGHTHS = " ▏▎▍▌▋▊▉"
+WARN_PERCENT = 70
+BAD_PERCENT = 90
+
+
+@dataclass(frozen=True)
+class Theme:
+    name: str
+    bar: str
+    sep: str
+    marker: str
+    icons: dict = field(default_factory=dict)
+    # 256-colour codes by role: accent, text, dim, ok, warn, bad. None: no colour.
+    palette: dict | None = None
+    # Colour a usage level only from WARN_PERCENT up.
+    quiet_levels: bool = False
+    # 256-colour codes from an empty bar's colour to a full one's, for gradients.
+    ramp: tuple = ()
+    # The 256-colour background a pill is drawn on.
+    track: int | None = None
+
+
+THEMES = {
+    "craft": Theme(
+        name="craft",
+        bar="gradient-pill",
+        sep=" │ ",
+        marker="┃",
+        icons={"model": "🛠 ", "branch": "⎇ ", "ctx": "🧠 ", "five_hour": "⏱ ", "seven_day": "📅 ", "cost": "💰 "},
+        palette={"accent": 209, "text": 252, "dim": 244, "ok": 114, "warn": 221, "bad": 203},
+        ramp=(78, 114, 150, 186, 222, 215, 209, 203),
+        track=237,
+    ),
+    "minimal": Theme(
+        name="minimal",
+        bar="line",
+        sep="  ·  ",
+        marker="│",
+        palette={"accent": 250, "text": 250, "dim": 242, "ok": 250, "warn": 179, "bad": 167},
+        quiet_levels=True,
+        ramp=(245, 246, 247, 248, 249, 250, 179, 167),
+        track=236,
+    ),
+    "neon": Theme(
+        name="neon",
+        bar="gradient",
+        sep=" ⟫ ",
+        marker="▌",
+        icons={"model": "⚡ ", "branch": "⌥ ", "ctx": "◈ ", "five_hour": "◷ ", "seven_day": "◴ ", "cost": "◆ "},
+        palette={"accent": 201, "text": 255, "dim": 97, "ok": 51, "warn": 226, "bad": 197},
+        ramp=(51, 45, 39, 63, 99, 135, 171, 201),
+        track=53,
+    ),
+    "ocean": Theme(
+        name="ocean",
+        bar="dots",
+        sep=" ≈ ",
+        marker="◆",
+        icons={"model": "🐋 ", "branch": "⚓ ", "ctx": "🌊 ", "five_hour": "🌙 ", "seven_day": "🧭 ", "cost": "🐚 "},
+        palette={"accent": 39, "text": 153, "dim": 67, "ok": 80, "warn": 215, "bad": 204},
+        ramp=(30, 37, 44, 51, 87, 123, 215, 204),
+        track=17,
+    ),
+    "dracula": Theme(
+        name="dracula",
+        bar="gradient-pill",
+        sep=" ┃ ",
+        marker="┃",
+        icons={"model": "🧛 ", "branch": "⎇ ", "ctx": "🩸 ", "five_hour": "🌙 ", "seven_day": "🕯 ", "cost": "💎 "},
+        palette={"accent": 141, "text": 255, "dim": 61, "ok": 84, "warn": 228, "bad": 203},
+        ramp=(84, 117, 141, 183, 212, 215, 203),
+        track=236,
+    ),
+    "nord": Theme(
+        name="nord",
+        bar="pill",
+        sep=" │ ",
+        marker="┃",
+        icons={"model": "❄ ", "branch": "⎇ ", "ctx": "🧊 ", "five_hour": "🌨 ", "seven_day": "🏔 ", "cost": "🪙 "},
+        palette={"accent": 110, "text": 255, "dim": 60, "ok": 108, "warn": 222, "bad": 174},
+        ramp=(108, 109, 110, 111, 116, 222, 174),
+        track=237,
+    ),
+    "catppuccin": Theme(
+        name="catppuccin",
+        bar="gradient-pill",
+        sep=" ∙ ",
+        marker="┃",
+        icons={"model": "🐱 ", "branch": "⎇ ", "ctx": "🧁 ", "five_hour": "☕ ", "seven_day": "🍵 ", "cost": "🍬 "},
+        palette={"accent": 183, "text": 189, "dim": 103, "ok": 151, "warn": 223, "bad": 211},
+        ramp=(151, 116, 117, 147, 183, 216, 211),
+        track=236,
+    ),
+    "gruvbox": Theme(
+        name="gruvbox",
+        bar="gradient",
+        sep=" ╎ ",
+        marker="┃",
+        icons={"model": "🌲 ", "branch": "⎇ ", "ctx": "🍂 ", "five_hour": "🔥 ", "seven_day": "🪵 ", "cost": "🪙 "},
+        palette={"accent": 214, "text": 223, "dim": 245, "ok": 142, "warn": 214, "bad": 167},
+        ramp=(142, 108, 109, 175, 214, 208, 167),
+        track=237,
+    ),
+    "tokyo-night": Theme(
+        name="tokyo-night",
+        bar="gradient-pill",
+        sep=" ⟩ ",
+        marker="┃",
+        icons={"model": "🌃 ", "branch": "⎇ ", "ctx": "🏮 ", "five_hour": "🚇 ", "seven_day": "🗼 ", "cost": "💴 "},
+        palette={"accent": 111, "text": 189, "dim": 60, "ok": 115, "warn": 179, "bad": 203},
+        ramp=(115, 117, 111, 141, 176, 215, 203),
+        track=235,
+    ),
+    "mono": Theme(name="mono", bar="ascii", sep=" | ", marker="|"),
+}
+DEFAULT_THEME = "craft"
+
+SPEC_STATES = {"approved": ("✓", "ok"), "not approved": ("●", "warn"), "stale": ("!", "warn")}
+GATE_B_STATES = {
+    "green": ("✓", "ok"),
+    "changes requested": ("✗", "bad"),
+    "in review": ("◐", "warn"),
+    "not run": ("○", "dim"),
+}
+
+
+@dataclass(frozen=True)
+class Options:
+    theme: Theme
+    bar: str
+    detail: bool = False
+    preview: bool = False
+    color: bool = True
+
+
+def parse_options(argv, env):
+    """Flags win over environment variables; unknown names fall back to the default."""
+    flags = dict(arg.partition("=")[::2] for arg in argv)
+    theme_name = (flags.get("--theme") or env.get("CRAFT_STATUSLINE_THEME", "")).strip().lower()
+    theme = THEMES.get(theme_name, THEMES[DEFAULT_THEME])
+    bar_name = (flags.get("--bar") or env.get("CRAFT_STATUSLINE_BAR", "")).strip().lower()
+    return Options(
+        theme=theme,
+        bar=bar_name if bar_name in BARS else theme.bar,
+        detail="--detail" in flags or env.get("CRAFT_STATUSLINE_DETAIL", "") not in ("", "0"),
+        preview="--preview" in flags,
+        color=theme.palette is not None and "NO_COLOR" not in env,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Drawing
+# ---------------------------------------------------------------------------
+
+
+class Painter:
+    def __init__(self, options):
+        self.options = options
+        self.palette = options.theme.palette or {}
+
+    def paint(self, role, text):
+        return self.color(text, self.palette.get(role))
+
+    def color(self, text, foreground=None, background=None):
+        if not self.options.color or not text or (foreground is None and background is None):
+            return text
+        codes = [f"38;5;{foreground}"] if foreground is not None else []
+        codes += [f"48;5;{background}"] if background is not None else []
+        return f"{ESC}{';'.join(codes)}m{text}{RESET}"
+
+    def ramp_code(self, index, width):
+        """The ramp's colour for cell `index` of a bar `width` cells wide."""
+        ramp = self.options.theme.ramp
+        if not ramp:
+            return None
+        return ramp[round(index * (len(ramp) - 1) / max(1, width - 1))]
+
+    def level_role(self, percent):
+        if percent >= BAD_PERCENT:
+            return "bad"
+        if percent >= WARN_PERCENT:
+            return "warn"
+        return "text" if self.options.theme.quiet_levels else "ok"
+
+    def icon(self, key):
+        return self.options.theme.icons.get(key, "")
+
+
+def number(value):
+    """A finite float from any JSON value; 0.0 for anything else, so one bad field never blanks the line."""
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return result if math.isfinite(result) else 0.0
+
+
+def clamp_percent(value):
+    return min(100.0, max(0.0, number(value)))
+
+
+def bar_cells(percent, width, style, marker_percent=None, marker="┃", rail=None):
+    """The bar as (role, cell) pairs, exactly `width` cells for any input."""
+    filled_cell, empty_cell = BARS.get(style, BARS["blocks"])
+    empty_cell = rail or empty_cell
+    exact = clamp_percent(percent) * width / 100
+    full = int(exact)
+    cells = [("fill", filled_cell)] * full
+    if full < width:
+        if style in SMOOTH_STYLES:
+            eighth = int((exact - full) * 8)
+            if eighth:
+                cells.append(("fill", SMOOTH_EIGHTHS[eighth]))
+        elif round(exact) > full:
+            cells.append(("fill", filled_cell))
+    cells += [("empty", empty_cell)] * (width - len(cells))
+    if marker_percent is not None and width:
+        index = min(width - 1, int(clamp_percent(marker_percent) * width / 100))
+        cells[index] = ("mark", marker)
+    return cells
+
+
+def draw_bar(painter, percent, width, marker_percent=None):
+    style = painter.options.bar
+    theme = painter.options.theme
+    pill = style in PILL_STYLES and painter.options.color and theme.track is not None
+    rail = PILL_RAIL if style in PILL_STYLES and not pill else None
+    cells = bar_cells(percent, width, style, marker_percent, theme.marker, rail)
+    background = theme.track if pill else None
+    level = painter.palette.get(painter.level_role(clamp_percent(percent)))
+    drawn = []
+    for index, (role, cell) in enumerate(cells):
+        if role == "fill":
+            foreground = painter.ramp_code(index, width) if style in GRADIENT_STYLES else None
+            foreground = foreground if foreground is not None else level
+        else:
+            foreground = painter.palette.get("accent" if role == "mark" else "dim")
+        drawn.append(painter.color(cell, foreground, background))
+    return "".join(drawn)
+
+
+def short_tokens(count):
+    count = int(number(count))
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.1f}M"
+    if count >= 1000:
+        return f"{count // 1000}k"
+    return str(count)
+
+
+def short_duration(seconds):
+    seconds = max(0, int(number(seconds)))
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m"
+
+
+def epoch_seconds(value):
+    """resets_at as epoch seconds: a number, or an ISO 8601 string."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(value) else None
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def pace(used_percent, resets_at, window_s, now):
+    """The share of the window elapsed, and the seconds until 100% at the current rate.
+
+    The second value is None when the current rate does not reach 100% before
+    the reset, or when there is no rate yet. Both are None without a reset time.
+    """
+    reset = epoch_seconds(resets_at)
+    if reset is None:
+        return None, None
+    remaining = min(window_s, max(0.0, reset - now))
+    elapsed = window_s - remaining
+    used = clamp_percent(used_percent)
+    elapsed_percent = 100 * elapsed / window_s
+    if used >= 100:
+        return elapsed_percent, 0.0
+    if elapsed <= 0 or used <= 0:
+        return elapsed_percent, None
+    to_full = (100 - used) * elapsed / used
+    return elapsed_percent, (to_full if to_full < remaining else None)
+
+
+# ---------------------------------------------------------------------------
+# Segments
+# ---------------------------------------------------------------------------
+
+
+def as_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def head_segment(painter, data, branch):
+    model = as_dict(data.get("model")).get("display_name") or "Claude"
+    parts = [painter.icon("model") + painter.paint("accent", model)]
+    effort = as_dict(data.get("effort")).get("level")
+    if effort:
+        parts.append(painter.paint("text", str(effort)))
+    if branch:
+        parts.append(painter.paint("dim", painter.icon("branch") + branch))
+    return painter.paint("dim", " · ").join(parts)
+
+
+def craft_segment(painter, snapshot):
+    """route · KEY state · A checks · B state · task n/m, or "" outside craft."""
+    session = as_dict(as_dict(snapshot).get("session"))
+    spec = as_dict(as_dict(snapshot).get("spec"))
+    if not session.get("active") and not spec.get("name"):
+        return ""
+    parts = [painter.paint("accent", "craft") + " " + painter.paint("text", session.get("route") or "—")]
+    if spec.get("name"):
+        glyph, role = SPEC_STATES.get(spec.get("state"), ("○", "dim"))
+        key = spec.get("key") or spec["name"][:16]
+        parts.append(
+            f"{painter.paint('text', key)} {painter.paint(role, glyph)} {painter.paint('dim', spec.get('state', ''))}"
+        )
+    checks = []
+    for item in as_dict(snapshot.get("gate_a")).get("items") or []:
+        ok = item.get("ok")
+        glyph, role = ("○", "dim") if ok is None else (("✓", "ok") if ok else ("✗", "bad"))
+        checks.append(f"{painter.paint('dim', item.get('name', '?'))} {painter.paint(role, glyph)}")
+    if checks:
+        parts.append(painter.paint("dim", "A ") + " ".join(checks))
+    glyph, role = GATE_B_STATES.get(as_dict(snapshot.get("gate_b")).get("state") or "not run", ("○", "dim"))
+    parts.append(painter.paint("dim", "B ") + painter.paint(role, glyph))
+    tasks = spec.get("tasks") or []
+    if tasks:
+        done = sum(1 for task in tasks if task.get("done"))
+        if done == len(tasks):
+            parts.append(painter.paint("ok", f"{done}/{len(tasks)}"))
+        else:
+            parts.append(painter.paint("text", f"{done + 1}/{len(tasks)}"))
+    return painter.paint("dim", " · ").join(parts)
+
+
+def context_segment(painter, data):
+    window = data.get("context_window")
+    if not isinstance(window, dict):
+        return ""
+    current = as_dict(window.get("current_usage"))
+    used_tokens = sum(
+        int(number(current.get(key)))
+        for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    )
+    size = int(number(window.get("context_window_size")))
+    percent = window.get("used_percentage")
+    if percent is None and size:
+        percent = 100 * used_tokens / size
+    if percent is None:
+        return ""
+    percent = clamp_percent(percent)
+    text = (
+        painter.icon("ctx")
+        + painter.paint("dim", "ctx ")
+        + draw_bar(painter, percent, 8)
+        + " "
+        + painter.paint(painter.level_role(percent), f"{round(percent)}%")
+    )
+    if used_tokens and size:
+        text += " " + painter.paint("dim", f"{short_tokens(used_tokens)}/{short_tokens(size)}")
+    return text
+
+
+def window_segment(painter, label, icon_key, limit, window_s, now):
+    """One rate-limit window: bar with the pace marker, %, reset, pace, projection."""
+    if limit.get("used_percentage") is None:
+        return ""
+    percent = clamp_percent(limit["used_percentage"])
+    elapsed_percent, to_full = pace(percent, limit.get("resets_at"), window_s, now)
+    text = (
+        painter.icon(icon_key)
+        + painter.paint("dim", label + " ")
+        + draw_bar(painter, percent, 10, elapsed_percent)
+        + " "
+        + painter.paint(painter.level_role(percent), f"{round(percent)}%")
+    )
+    reset = epoch_seconds(limit.get("resets_at"))
+    if reset is not None:
+        text += " " + painter.paint("dim", "↻" + short_duration(reset - now))
+    if elapsed_percent is not None:
+        text += " " + painter.paint("dim", f"pace {round(elapsed_percent)}%")
+    if to_full is not None:
+        text += " " + painter.paint("bad", "⚠ full" if to_full <= 0 else f"⚠ full in {short_duration(to_full)}")
+    return text
+
+
+def usage_line(painter, data, now):
+    limits = as_dict(data.get("rate_limits"))
+    windows = [
+        window_segment(painter, label, key, limits[key], window_s, now)
+        for label, key, window_s in WINDOWS
+        if isinstance(limits.get(key), dict)
+    ]
+    parts = [context_segment(painter, data)]
+    parts += [segment for segment in windows if segment] or [painter.paint("dim", "usage after first reply")]
+    return painter.paint("dim", painter.options.theme.sep).join(part for part in parts if part)
+
+
+def detail_line(painter, data):
+    """Session cost and rate, duration, lines changed, tokens, and the cache share."""
+    cost = as_dict(data.get("cost"))
+    window = as_dict(data.get("context_window"))
+    parts = []
+    usd = number(cost.get("total_cost_usd"))
+    duration_ms = number(cost.get("total_duration_ms"))
+    if cost.get("total_cost_usd") is not None:
+        parts.append(painter.icon("cost") + painter.paint("text", f"${usd:.2f}"))
+        if duration_ms > 0:
+            parts.append(painter.paint("dim", f"${usd / (duration_ms / 3_600_000):.2f}/h"))
+    if duration_ms > 0:
+        api_ms = number(cost.get("total_api_duration_ms"))
+        api = f" (api {short_duration(api_ms / 1000)})" if api_ms > 0 else ""
+        parts.append(painter.paint("text", short_duration(duration_ms / 1000)) + painter.paint("dim", api))
+    added, removed = cost.get("total_lines_added"), cost.get("total_lines_removed")
+    if added is not None or removed is not None:
+        parts.append(
+            painter.paint("ok", f"+{int(number(added))}") + " " + painter.paint("bad", f"−{int(number(removed))}")
+        )
+    if window.get("total_input_tokens") is not None or window.get("total_output_tokens") is not None:
+        tokens = (
+            f"in {short_tokens(window.get('total_input_tokens'))} out {short_tokens(window.get('total_output_tokens'))}"
+        )
+        parts.append(painter.paint("dim", tokens))
+    current = as_dict(window.get("current_usage"))
+    read = number(current.get("cache_read_input_tokens"))
+    total_input = read + number(current.get("input_tokens")) + number(current.get("cache_creation_input_tokens"))
+    if total_input > 0:
+        parts.append(painter.paint("dim", "cache ") + painter.paint("text", f"{round(100 * read / total_input)}%"))
+    return painter.paint("dim", " · ").join(parts) if parts else painter.paint("dim", "no cost yet")
+
+
+def render(data, snapshot, options, now, branch=""):
+    """The status line for one refresh: two lines, three with --detail."""
+    data = as_dict(data)
+    painter = Painter(options)
+    sep = painter.paint("dim", options.theme.sep)
+    head = [head_segment(painter, data, branch), craft_segment(painter, snapshot)]
+    lines = [sep.join(part for part in head if part), usage_line(painter, data, now)]
+    if options.detail:
+        lines.append(detail_line(painter, data))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+
+
+def craft_snapshot(cwd):
+    """bin/craft-ui-state for cwd, or None when it fails or reports an error."""
+    try:
+        result = subprocess.run(
+            [sys.executable, str(UI_STATE), "--cwd", cwd],
+            capture_output=True,
+            text=True,
+            timeout=UI_STATE_TIMEOUT_S,
+            check=False,
+        )
+        snapshot = json.loads(result.stdout or "{}")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(snapshot, dict) or snapshot.get("error"):
+        return None
+    return snapshot
+
+
+def git_branch(cwd):
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=GIT_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def sample(now):
+    """Sample input and snapshot for --preview."""
+    data = {
+        "model": {"display_name": "Opus"},
+        "effort": {"level": "high"},
+        "context_window": {
+            "used_percentage": 42,
+            "context_window_size": 200_000,
+            "total_input_tokens": 1_240_000,
+            "total_output_tokens": 45_000,
+            "current_usage": {
+                "input_tokens": 2_000,
+                "cache_creation_input_tokens": 4_000,
+                "cache_read_input_tokens": 78_000,
+            },
+        },
+        "rate_limits": {
+            "five_hour": {"used_percentage": 62, "resets_at": now + 70 * 60},
+            "seven_day": {"used_percentage": 18, "resets_at": now + 4 * 86400 + 6 * 3600},
+        },
+        "cost": {
+            "total_cost_usd": 1.23,
+            "total_duration_ms": 35 * 60_000,
+            "total_api_duration_ms": 12 * 60_000,
+            "total_lines_added": 120,
+            "total_lines_removed": 8,
+        },
+    }
+    snapshot = {
+        "session": {"active": True, "route": "task"},
+        "spec": {
+            "name": "2026-10-12-sample",
+            "key": "CSL",
+            "state": "approved",
+            "tasks": [{"done": True}, {"done": True}, {"done": False}, {"done": False}],
+        },
+        "gate_a": {
+            "items": [{"name": "trace", "ok": True}, {"name": "tests", "ok": False}, {"name": "lint", "ok": None}]
+        },
+        "gate_b": {"state": "in review"},
+    }
+    return data, snapshot
+
+
+def preview(options, explicit_bar):
+    now = time.time()
+    data, snapshot = sample(now)
+    blocks = []
+    for name, theme in THEMES.items():
+        themed = replace(
+            options,
+            theme=theme,
+            bar=explicit_bar or theme.bar,
+            color=theme.palette is not None and options.color,
+        )
+        blocks.append(f"── {name} (bar: {themed.bar})\n" + render(data, snapshot, themed, now, branch="main"))
+    bars = [f"{style:<14}" + draw_bar(Painter(replace(options, bar=style)), 62, 20, 71) for style in BARS]
+    blocks.append("── bar styles (62%, pace marker at 71%)\n" + "\n".join(bars))
+    return "\n\n".join(blocks)
+
+
+def main():
+    argv = sys.argv[1:]
+    options = parse_options(argv, os.environ)
+    if options.preview:
+        explicit_bar = options.bar if any(arg.startswith("--bar=") for arg in argv) else ""
+        print(preview(options, explicit_bar))
+        return 0
+    try:
+        data = json.loads(sys.stdin.read() or "{}")
+    except (OSError, ValueError, RecursionError):
+        data = {}
+    data = as_dict(data)
+    cwd = as_dict(data.get("workspace")).get("current_dir") or data.get("cwd") or os.getcwd()
+    try:
+        print(render(data, craft_snapshot(cwd), options, time.time(), branch=git_branch(cwd)))
+    except Exception:  # pylint: disable=broad-except
+        # INV-1: a status line never shows a traceback.
+        print("Claude · status unavailable")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

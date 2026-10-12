@@ -1,0 +1,11 @@
+# Python bytecode from the hook scripts and the self-test
+__pycache__/
+*.py[cod]
+
+# Eval runs. Each one costs money; the results are not source
+evals/results/
+
+# Claude Code writes these for the editor and for local runs
+.claude-plugin/types/
+.claude/
+.pytest_cache/

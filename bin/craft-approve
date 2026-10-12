@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""craft-approve - record that the developer approved the active spec.
+
+This opens the spec gate. It records the SHA-256 of spec.md exactly as it is on
+disk. When spec.md changes later, the approval no longer covers it, and the gate
+shuts again until the developer approves the change.
+
+Run it only after the developer said approve, in their own words. It records a
+fact, so record a fact that is true.
+
+Usage:
+    bin/craft-approve [--note "TEXT"]
+    bin/craft-approve --spec <directory name>
+    bin/craft-approve --list
+
+Options:
+    --spec NAME   Approve this directory under .claude/specs/ instead of the
+                  active one. It also becomes the active spec.
+    --note TEXT   A free-text note stored with the approval, for example the
+                  developer's words.
+    --list        Show the approvals of the active spec, and stop.
+    --cwd PATH    Work against the repository that holds PATH.
+
+Exit codes:
+    0   the approval was recorded, or --list printed
+    1   the approval could not be written
+    2   the arguments are wrong, or there is no spec to approve
+"""
+
+import datetime
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+
+import craft_state  # noqa: E402
+
+
+def argument(argv, flag, default=None):
+    """Return the value after flag in argv, or default."""
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cwd = argument(argv, "--cwd")
+
+    chosen = argument(argv, "--spec")
+    if chosen:
+        chosen = chosen.strip().strip("/").split("/")[-1]
+        if not (craft_state.specs_dir(cwd) / chosen / "spec.md").is_file():
+            sys.stderr.write("No spec.md in .claude/specs/%s/\n" % chosen)
+            return 2
+        try:
+            (craft_state.specs_dir(cwd) / "ACTIVE").write_text(chosen + "\n", encoding="utf-8")
+        except OSError as error:
+            sys.stderr.write("Could not set ACTIVE: %s\n" % error)
+            return 1
+
+    directory = craft_state.active_spec_dir(cwd)
+    if directory is None or not (directory / "spec.md").is_file():
+        sys.stderr.write(
+            "There is no active spec to approve.\n"
+            "Create one first: bin/craft-spec new --route task --title \"TITLE\"\n"
+        )
+        return 2
+
+    if "--list" in argv:
+        approvals = craft_state.spec_approvals(directory.name, cwd)
+        state, _detail = craft_state.spec_state(cwd)
+        print("spec %s — %s — %d approval(s)" % (directory.name, state, len(approvals)))
+        for approval in approvals:
+            print(
+                "  %s  %s  %s"
+                % (
+                    approval.get("approved_at", "?"),
+                    str(approval.get("sha256", ""))[:12],
+                    approval.get("note", ""),
+                )
+            )
+        return 0
+
+    digest = craft_state.file_digest(directory / "spec.md")
+    if not digest:
+        sys.stderr.write("Could not read %s\n" % (directory / "spec.md"))
+        return 1
+    state, detail = craft_state.spec_state(cwd)
+    if state == "approved":
+        print("Already approved at this exact text (%s). Nothing to record." % digest[:12])
+        return 0
+
+    note = argument(argv, "--note", "") or ""
+    if not craft_state.add_spec_approval(directory.name, digest, note=note, cwd=cwd):
+        sys.stderr.write("Could not write %s\n" % craft_state.state_path("approval.json", cwd))
+        return 1
+
+    heading = "spec approved" if state == "not approved" else "spec delta approved"
+    try:
+        with open(directory / "log.md", "a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## %s — %s\nsha256 %s%s\n"
+                % (
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                    heading,
+                    digest[:12],
+                    (" · note: %s" % note) if note else "",
+                )
+            )
+    except OSError:
+        pass
+
+    print("Spec approved. The spec gate is open for %s." % directory.name)
+    print("  sha256  %s" % digest[:12])
+    if state == "stale":
+        print("  replaces the approval of %s" % (detail.get("approved_sha256") or "")[:12])
+    print("Any change to spec.md from now on shuts the gate until it is approved again.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

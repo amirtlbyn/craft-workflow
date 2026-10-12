@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: human-owned-refused
+context:
+  scaffold_script: scaffold.sh

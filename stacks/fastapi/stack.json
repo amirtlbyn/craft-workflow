@@ -1,0 +1,223 @@
+{
+  "id": "fastapi",
+  "label": "FastAPI",
+  "emoji": "⚡",
+  "language": "python",
+  "priority": 65,
+  "detect": {
+    "any_contains": [
+      {
+        "files": [
+          "pyproject.toml",
+          "requirements.txt",
+          "requirements/base.txt",
+          "requirements/prod.txt",
+          "setup.cfg",
+          "Pipfile"
+        ],
+        "pattern": "(?im)(^|[\\s\"'\\[,])fastapi([\\s\"'\\]\\[<>=~!;,^]|$)"
+      }
+    ]
+  },
+  "source_extensions": [
+    ".py"
+  ],
+  "tests": {
+    "globs": [
+      "tests/*",
+      "*/tests/*",
+      "test/*",
+      "*/test/*",
+      "test_*.py",
+      "*_test.py",
+      "conftest.py"
+    ],
+    "extensions": [
+      ".py"
+    ],
+    "id_rule": "Put the criterion ID first in the test function's docstring: \"\"\"PAY-2: Given ..., when ..., then ....\"\"\""
+  },
+  "checks": {
+    "tests": [
+      {
+        "when_file": "uv.lock",
+        "run": "uv run pytest -q"
+      },
+      {
+        "when_file": "poetry.lock",
+        "run": "poetry run pytest -q"
+      },
+      {
+        "run": "pytest -q"
+      }
+    ],
+    "lint": [
+      {
+        "when_contains": {
+          "file": "pyproject.toml",
+          "pattern": "\\[tool\\.ruff"
+        },
+        "run": "ruff check ."
+      },
+      {
+        "run": "ruff check ."
+      }
+    ],
+    "format": [
+      {
+        "when_contains": {
+          "file": "pyproject.toml",
+          "pattern": "\\[tool\\.black\\]"
+        },
+        "run": "black --check ."
+      },
+      {
+        "run": "ruff format --check ."
+      }
+    ],
+    "types": [
+      {
+        "when_contains": {
+          "file": "pyproject.toml",
+          "pattern": "\\[tool\\.mypy\\]"
+        },
+        "run": "mypy ."
+      },
+      {
+        "when_contains": {
+          "file": "pyproject.toml",
+          "pattern": "\\[tool\\.(based)?pyright\\]"
+        },
+        "run": "pyright"
+      }
+    ]
+  },
+  "paths": {
+    "money": [
+      "*/wallet*/*",
+      "*/ledger/*",
+      "*/payment*/*",
+      "*/payout*/*",
+      "*/withdraw*/*",
+      "*/deposit*/*",
+      "*/transfer*/*",
+      "*/settlement*/*",
+      "*/billing/*",
+      "balance*.py",
+      "fee*.py",
+      "commission*.py"
+    ],
+    "auth": [
+      "*/auth/*",
+      "auth/*",
+      "auth.py",
+      "security.py",
+      "*/security/*",
+      "*security*.py",
+      "*token*.py",
+      "*otp*.py",
+      "*password*.py",
+      "*permission*.py",
+      "deps.py",
+      "dependencies.py"
+    ],
+    "migrations": [
+      "alembic/versions/*.py",
+      "*/alembic/versions/*.py",
+      "migrations/versions/*.py",
+      "*/migrations/versions/*.py"
+    ],
+    "models": [
+      "models.py",
+      "*/models/*.py",
+      "models/*.py",
+      "*/db/*.py",
+      "db/*.py",
+      "crud*.py",
+      "*/crud/*.py",
+      "*repositor*.py",
+      "*/repositories/*.py"
+    ],
+    "views": [
+      "main.py",
+      "*/routers/*.py",
+      "routers/*.py",
+      "*/api/*.py",
+      "api/*.py",
+      "*/endpoints/*.py",
+      "routes*.py",
+      "*/routes/*.py"
+    ]
+  },
+  "toolchain": [
+    {
+      "id": "lint",
+      "purpose": "Lint and import order.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "ruff",
+          "pip": "ruff"
+        }
+      ]
+    },
+    {
+      "id": "format",
+      "purpose": "Formatting. ruff format, or black where the repository configures it.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "ruff",
+          "pip": "ruff"
+        },
+        {
+          "command": "black",
+          "pip": "black"
+        }
+      ]
+    },
+    {
+      "id": "tests",
+      "purpose": "The test runner.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "pytest",
+          "pip": "pytest"
+        }
+      ]
+    },
+    {
+      "id": "types",
+      "purpose": "A type checker. FastAPI leans on annotations, so it pays here.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "mypy",
+          "pip": "mypy"
+        },
+        {
+          "command": "pyright",
+          "npm": "pyright"
+        },
+        {
+          "command": "basedpyright",
+          "pip": "basedpyright"
+        }
+      ]
+    }
+  ],
+  "skills": [
+    "python-style",
+    "fastapi-practices"
+  ],
+  "standards": [
+    "python_code_style",
+    "fastapi_standards"
+  ],
+  "concurrency": {
+    "skill": "fastapi-async",
+    "note": "async def endpoints run on the event loop. One blocking call inside one stalls every request on that worker. The concurrency skill decides whether this service is async-native before any async pattern is used."
+  },
+  "lenses": "stacks/fastapi/lenses.md"
+}

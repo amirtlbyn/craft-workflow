@@ -1,0 +1,181 @@
+{
+  "comment": "Settings and questions for the optional Jev decision layer. bin/craft-jev reads this file. Jev is TypeSafe's System One decision model: it answers typed questions (noul = yes/no probability, choice = one option with calibrated probabilities) and never generates text, so it cannot call tools itself. It decides; Claude acts. The questions below are the decisions this workflow delegates to it. Edit the criteria to tune them. Keep each choice's keys: bin/craft-jev maps them to routes, models, lenses and skills. The API key is never stored here. It comes from OPENROUTER_API_KEY or ~/.config/craft-workflow/openrouter.key.",
+  "model": "typesafe/jev-1.13",
+  "endpoint": "https://openrouter.ai/api/alpha/decisions",
+  "fallback_endpoints": [
+    "https://openrouter.ai/api/v1/alpha/decisions"
+  ],
+  "timeout_seconds": 6,
+  "retries": 1,
+  "confidence_threshold": 0.7,
+  "noul_threshold": 0.5,
+  "max_request_chars": 2000,
+  "max_paths": 200,
+  "provider": {
+    "data_collection": "deny"
+  },
+  "stages": {
+    "route": {
+      "route": {
+        "type": "choice",
+        "instructions": "How much engineering process does this change request need?",
+        "criteria": {
+          "quick": "A typo, comment, rename, import, config value, or a one-line fix whose cause is already known. No new behavior.",
+          "task": "One merge request: a scoped feature or bug fix with new business logic, a new endpoint, a changed contract, or a regression test, and no open design question.",
+          "project": "Several sessions, a schema migration, a change to money or the ledger, a new external integration, a new permission or authentication path, or work across more than two applications."
+        }
+      },
+      "risk_high": {
+        "type": "noul",
+        "instructions": "Does this change touch money, authentication, authorization, a database migration, concurrency, or an external integration?",
+        "criteria": {
+          "true": "It changes balances, payments, ledger entries, permissions, logins, tokens, schema, locks, retries, or calls to an outside system.",
+          "false": "It changes none of those."
+        }
+      },
+      "implementer_model": {
+        "type": "choice",
+        "instructions": "Which model should write the code for this change?",
+        "criteria": {
+          "haiku": "Mechanical work with no new logic: renames, moving code, boilerplate, config values, formatting.",
+          "sonnet": "Ordinary feature work and bug fixes with clear acceptance criteria.",
+          "opus": "Subtle correctness: concurrency, money arithmetic, state machines, complex algorithms, or a cross-cutting refactor."
+        }
+      },
+      "skill_validation_discipline": {
+        "type": "noul",
+        "instructions": "Will this change add a check, guard clause, validator, or database constraint?"
+      },
+      "skill_test_discipline": {
+        "type": "noul",
+        "instructions": "Will this change need new or changed automated tests?"
+      },
+      "skill_django_practices": {
+        "type": "noul",
+        "instructions": "Does this change involve Django, DRF, Celery, the Django ORM, or Django migrations?"
+      },
+      "skill_debugging": {
+        "type": "noul",
+        "instructions": "Is this a report of a bug, failure, or error whose cause is not yet known?"
+      },
+      "skill_system_design": {
+        "type": "noul",
+        "instructions": "Does this change leave an architecture question open: a new module, service boundary, data owner, or a choice between designs?"
+      },
+      "skill_concurrency": {
+        "type": "noul",
+        "instructions": "Does this request ask for concurrent code for throughput or latency: async, parallel work, goroutines, worker pools, threads, or 'high concurrency'?"
+      }
+    },
+    "review": {
+      "risk_high": {
+        "type": "noul",
+        "instructions": "Do these changed files touch money, authentication, authorization, a database migration, concurrency, or an external integration?",
+        "criteria": {
+          "true": "The paths or the summary show balances, payments, ledger, permissions, auth, tokens, migrations, locks, or outside calls.",
+          "false": "They show none of those."
+        }
+      },
+      "lens_logic": {
+        "type": "noul",
+        "instructions": "Do these changed files carry business logic, money, state transitions, transactions, concurrency, tests, or migrations?"
+      },
+      "lens_security": {
+        "type": "noul",
+        "instructions": "Do these changed files touch entry points (views, routers, handlers, controllers), request or response schemas, permissions, authentication, tokens, secrets, raw SQL, deserialization, file upload, outbound URLs, or admin actions?"
+      },
+      "lens_query": {
+        "type": "noul",
+        "instructions": "Do these changed files touch models, entities, repositories, ORM queries, raw SQL, or migrations?"
+      },
+      "lens_concurrency": {
+        "type": "noul",
+        "instructions": "Do these changed files add or change concurrent code for throughput: async functions, goroutines, channels, worker pools, executors, threads, reactive types, or parallel batches?"
+      }
+    }
+  },
+  "approve": {
+    "comment": "The tool-call approval hook (scripts/jev_approve.py). Off until `craft-jev approve on`, and it needs Jev on too. It can only turn a permission prompt into an approval: when it does not approve, it stays silent and Claude Code asks you as usual. It never approves a call that matches ask_patterns, and it denies a call that matches deny_patterns. Patterns are Python regular expressions matched against the Bash command, case-insensitively. Secrets are redacted before anything is sent.",
+    "tools": [
+      "Bash",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "NotebookEdit"
+    ],
+    "confidence_threshold": 0.9,
+    "risk_threshold": 0.3,
+    "timeout_seconds": 3,
+    "retries": 0,
+    "max_command_chars": 1500,
+    "deny_patterns": [
+      "\\brm\\s+(-[a-z]*\\s+)*-[a-z]*[rf][a-z]*\\s+(-[a-z]*\\s+)*(/|~|\\$home|/\\*)(\\s|$)",
+      "\\bmkfs(\\.\\w+)?\\b",
+      "\\bdd\\b[^|;&]*\\bof=/dev/",
+      ":\\(\\)\\s*\\{\\s*:\\|:&\\s*\\};:",
+      "\\b(curl|wget)\\b[^|;&]*\\|\\s*(sudo\\s+)?(ba|z|k)?sh\\b",
+      "\\bchmod\\s+-r\\s+777\\s+/(\\s|$)",
+      ">\\s*/dev/(sd|nvme|disk)"
+    ],
+    "ask_patterns": [
+      "\\bsudo\\b",
+      "\\bgit\\s+(push|reset\\s+--hard|clean|rebase|filter-branch|filter-repo|branch\\s+-d|checkout\\s+--|restore\\s+--source|stash\\s+(drop|clear)|commit\\s+--amend|tag\\s+-d)\\b",
+      "\\brm\\s+(-[a-z]*\\s+)*-[a-z]*r",
+      "\\b(curl|wget|ssh|scp|sftp|nc|ncat|telnet|ftp)\\b",
+      "\\brsync\\b[^|;&]*:",
+      "\\b(pip3?|pipx|npm|pnpm|yarn|apt(-get)?|brew|gem|cargo|go)\\s+(install|add|i|remove|uninstall)\\b",
+      "\\bdocker\\s+(rm|rmi|system\\s+prune|volume\\s+rm|push|login)\\b",
+      "\\b(kubectl|helm|terraform|ansible|gcloud|aws|az)\\b",
+      "\\b(mysql|psql|mongo|mongosh|redis-cli|sqlite3)\\b",
+      "\\b(printenv|env)\\s*($|\\|)",
+      "(\\.env\\b|id_rsa|id_ed25519|\\.ssh/|\\.aws/|\\.netrc|credentials|secrets?\\.(json|ya?ml))",
+      "\\bcraft-(approve|session\\s+record-check|jev\\s+(on|off|approve|set|unset))\\b",
+      "craft_hooks\\s*=\\s*off",
+      "\\bdeploy",
+      "\\b(shutdown|reboot|kill\\s+-9|killall|pkill)\\b",
+      "\\beval\\b",
+      "\\bbase64\\s+(-d|--decode)\\b",
+      "\\b(python3?|node|perl|ruby|php)\\s+-(c|e)\\b",
+      "\\b(ba|z|k)?sh\\s+-c\\b",
+      "\\bxargs\\b[^|;&]*\\brm\\b",
+      "\\bfind\\b[^|;&]*-(delete|exec)\\b",
+      "\\bchmod\\b|\\bchown\\b",
+      "\\b(python3?|node|perl|ruby|php)\\s+(-\\s*)?<<"
+    ],
+    "ask_path_patterns": [
+      "(^|/)\\.env(\\.|$)",
+      "(^|/)\\.ssh/",
+      "(^|/)\\.aws/",
+      "(^|/)\\.claude/craft/(approval|session|jev)\\.json$",
+      "(^|/)\\.git/",
+      "(^|/)(id_rsa|id_ed25519)",
+      "\\.(pem|key|p12|pfx)$"
+    ],
+    "questions": {
+      "verdict": {
+        "type": "choice",
+        "instructions": "Should this tool call run without asking the developer?",
+        "criteria": {
+          "allow": "A routine, reversible step of software work: reading, searching, or listing files in this repository or in the session's own temporary or scratch directory; running tests, linters, formatters, type checkers, or local builds, including inside a local Docker container; read-only inspection such as git status, diff, log, show, or branch, and docker ps, logs, or inspect; running this workflow's read-only commands (craft-std, craft-spec status or trace, craft-check); or editing a source or test file inside the repository.",
+          "ask": "Anything else, or anything uncertain: deleting data, rewriting git history, installing software, touching credentials, network access, deployment, databases, processes, or files outside the repository."
+        }
+      },
+      "irreversible": {
+        "type": "noul",
+        "instructions": "Could this tool call destroy data or leave a change that is hard to undo?",
+        "criteria": {
+          "true": "It deletes files or data, rewrites git history, drops or migrates a database, overwrites a file outside version control, or stops a service.",
+          "false": "It only reads, or it changes files that git tracks and can restore, or it runs tests against a disposable database."
+        }
+      },
+      "sends_data_out": {
+        "type": "noul",
+        "instructions": "Does this tool call open a network connection that sends data from this computer to another machine?",
+        "criteria": {
+          "true": "It uploads, posts, pushes, or fetches over the network: curl, wget, ssh, scp, git push, git fetch, git pull, an HTTP client, a package install, or a remote database.",
+          "false": "It only reads or writes local files or local processes. Names such as origin/main, remote, or a URL inside a comment do not open a connection. Local Docker containers are local."
+        }
+      }
+    }
+  }
+}

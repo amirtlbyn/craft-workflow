@@ -1,0 +1,4 @@
+{
+  "description": "The craft mod: the status at the top, the craft board, cost per agent, zero-token commands, and the spec gate as a question. Claude Code 2.1.287 or later. The Python hooks in hooks/hooks.json stay the enforcement.",
+  "modules": ["./mod/craft.tsx"]
+}

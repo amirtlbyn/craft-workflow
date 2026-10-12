@@ -1,0 +1,467 @@
+#!/usr/bin/env python3
+"""craft-toolchain - find the verification tools that are missing, and install them.
+
+config/workflow.md section 6 names the commands that prove Gate A. When one of
+them is not installed, the workflow cannot run it, and the honest state of the
+work is `blocked` rather than `done`. This finds that out before the work starts,
+and offers the one command that fixes it.
+
+    craft-toolchain                      report what is missing. Installs nothing
+    craft-toolchain --json               the same, as JSON
+    craft-toolchain --install            install the missing required tools
+    craft-toolchain --install --all      the optional tools as well
+    craft-toolchain --manager pipx       choose the installer instead of detecting it
+    craft-toolchain --allow-repo-change  permit an installer that edits pyproject.toml
+    craft-toolchain --stack go           check one stack's tools instead of the detected ones
+
+Which tools: the toolchain of every stack bin/craft-stack detects. Django, the
+reference stack, uses config/toolchain.json. FastAPI, Go, Java, and Node use the
+"toolchain" list of their stacks/<id>/stack.json. A Go tool installs with
+`go install`, a Node tool with `npm install -g`, a Python tool with the
+detected Python installer.
+
+Reporting never changes anything. Only --install runs a command, it prints each
+command before it runs it, and it stops at the first failure.
+
+Exit codes:
+    0   every required tool is present
+    1   a required tool is missing, or an install failed
+    2   the arguments are wrong
+
+The wanted set is config/toolchain.json, not this file. Add a tool there.
+"""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import sysconfig
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+CONFIG = PLUGIN_ROOT / "config" / "toolchain.json"
+WORKFLOW = PLUGIN_ROOT / "config" / "workflow.md"
+
+# Managers that write to a file the repository tracks. They need consent.
+REPO_CHANGING = ("poetry", "pipenv")
+
+
+def which(command):
+    """Return the full path of command on PATH, or an empty string."""
+    try:
+        if os.sep in command:
+            return command if os.access(command, os.X_OK) else ""
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = os.path.join(directory, command)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        return ""
+    except Exception:
+        return ""
+
+
+def host_root(start=None):
+    """Return the closest directory at or above start that holds a .git entry."""
+    try:
+        path = pathlib.Path(start or os.getcwd()).resolve()
+        for candidate in [path] + list(path.parents):
+            if (candidate / ".git").exists():
+                return candidate
+        return path
+    except Exception:
+        return pathlib.Path(".")
+
+
+def read_json(path, default):
+    """Return the parsed JSON at path, or default."""
+    try:
+        return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def argument(argv, flag, default=None):
+    """Return the value after flag in argv, or default."""
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+# ---------------------------------------------------------------------------
+# Which installer to use
+# ---------------------------------------------------------------------------
+
+
+def detect_manager(root):
+    """Return (manager, why). The manager decides how a package is installed.
+
+    The order matters. A repository that pins its own dependencies should have
+    them installed its own way, so uv, poetry and pipenv come first. A virtual
+    environment is next, because installing into it is contained. pipx is the
+    best default for a standalone command line tool, because each one gets its
+    own environment and nothing is shared. Installing into the user site
+    directory is the last resort.
+    """
+    if which("uv") and ((root / "uv.lock").is_file() or (root / "pyproject.toml").is_file()):
+        return "uv", "uv is on PATH and this repository has a pyproject"
+    if which("poetry") and (root / "poetry.lock").is_file():
+        return "poetry", "poetry.lock is in this repository"
+    if which("pipenv") and (root / "Pipfile").is_file():
+        return "pipenv", "a Pipfile is in this repository"
+    if os.environ.get("VIRTUAL_ENV"):
+        return "pip", "a virtual environment is active at %s" % os.environ["VIRTUAL_ENV"]
+    if which("pipx"):
+        return "pipx", "pipx is on PATH, and it keeps each tool in its own environment"
+    return "pip-user", "nothing better was found, so the user site directory it is"
+
+
+def install_command(manager, candidate):
+    """Return the command that installs one candidate, as a list, or None."""
+    npm_package = candidate.get("npm")
+    pip_package = candidate.get("pip")
+    go_package = candidate.get("go")
+
+    if go_package:
+        if which("go"):
+            return ["go", "install", go_package]
+        return None
+
+    if pip_package:
+        if manager == "uv":
+            return ["uv", "tool", "install", pip_package]
+        if manager == "poetry":
+            return ["poetry", "add", "--group", "dev", pip_package]
+        if manager == "pipenv":
+            return ["pipenv", "install", "--dev", pip_package]
+        if manager == "pipx":
+            return ["pipx", "install", pip_package]
+        if manager == "pip":
+            return [sys.executable, "-m", "pip", "install", pip_package]
+        if manager == "pip-user":
+            return [sys.executable, "-m", "pip", "install", "--user", pip_package]
+    if npm_package:
+        if which("npm"):
+            return ["npm", "install", "-g", npm_package]
+        return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# What is present, and what is not
+# ---------------------------------------------------------------------------
+
+
+def survey(config, manager):
+    """Return one record per tool in config, saying whether it is satisfied."""
+    records = []
+    for tool in config.get("tools", []):
+        candidates = tool.get("any_of") or []
+        found_command = ""
+        found_path = ""
+        for candidate in candidates:
+            path = which(candidate.get("command", ""))
+            if path:
+                found_command = candidate["command"]
+                found_path = path
+                break
+
+        plan = None
+        if not found_path:
+            for candidate in candidates:
+                command = install_command(manager, candidate)
+                if command:
+                    plan = {"command": candidate.get("command"), "argv": command}
+                    break
+
+        records.append(
+            {
+                "id": tool.get("id", ""),
+                "required": bool(tool.get("required")),
+                "purpose": tool.get("purpose", ""),
+                "source": tool.get("source", ""),
+                "accepts": [c.get("command") for c in candidates],
+                "found": found_command,
+                "path": found_path,
+                "install": plan,
+            }
+        )
+    return records
+
+
+def forbidden_present(config):
+    """Return the forbidden tools that are installed anyway."""
+    found = []
+    for entry in config.get("forbidden", []):
+        path = which(entry.get("command", ""))
+        if path:
+            found.append({"command": entry["command"], "path": path, "reason": entry.get("reason", "")})
+    return found
+
+
+def externally_managed_note(manager):
+    """Warn when this Python refuses a pip install, which PEP 668 calls managed.
+
+    Fedora, Debian and Ubuntu ship a marker file that makes `pip install` refuse
+    to touch the system interpreter. Without this warning the install fails with
+    a wall of text about an externally managed environment, and the reason is not
+    obvious.
+    """
+    if manager not in ("pip", "pip-user"):
+        return ""
+    try:
+        marker = pathlib.Path(sysconfig.get_path("stdlib")) / "EXTERNALLY-MANAGED"
+        if not marker.is_file():
+            return ""
+    except Exception:
+        return ""
+    return (
+        "This Python is externally managed (PEP 668), so pip will refuse to "
+        "install into it. Install pipx or uv first, then run this again: it "
+        "will pick one of them and give each tool its own environment."
+    )
+
+
+def container_note():
+    """Return a warning when section 6 runs its checks inside a container."""
+    try:
+        text = WORKFLOW.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    for line in text.splitlines():
+        lowered = line.lower()
+        if "| tests" in lowered and ("docker" in lowered or "podman" in lowered):
+            return (
+                "config/workflow.md section 6 runs the tests inside a container. "
+                "Installing a tool on this host does not put it in that container. "
+                "For the container, add the package to its image or its requirements "
+                "file instead."
+            )
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+
+def print_report(records, manager, why, forbidden, note, root, warning=""):
+    print("craft-toolchain")
+    print("  host repository  %s" % root)
+    print("  installer        %s  (%s)" % (manager, why))
+    if note:
+        print("  note             %s" % note)
+    if warning:
+        print("  WARNING          %s" % warning)
+
+    for required in (True, False):
+        group = [record for record in records if record["required"] == required]
+        if not group:
+            continue
+        print("")
+        print("required" if required else "optional")
+        for record in group:
+            if record["path"]:
+                print("  OK       %-14s %-14s %s" % (record["id"], record["found"], record["path"]))
+            elif record["install"]:
+                print(
+                    "  MISSING  %-14s %-14s %s"
+                    % (record["id"], record["install"]["command"], " ".join(record["install"]["argv"]))
+                )
+            else:
+                print(
+                    "  MISSING  %-14s %-14s no installer found for it here"
+                    % (record["id"], "/".join(str(a) for a in record["accepts"]))
+                )
+
+    if forbidden:
+        print("")
+        print("forbidden, and installed anyway")
+        for entry in forbidden:
+            print("  %s  %s" % (entry["command"], entry["path"]))
+            print("    %s" % entry["reason"])
+
+    missing = [r for r in records if r["required"] and not r["path"]]
+    optional_missing = [r for r in records if not r["required"] and not r["path"]]
+    print("")
+    if missing:
+        print("%d required tool(s) missing. Until they are installed, every check they" % len(missing))
+        print("back is `blocked`, never `done`.")
+        print("")
+        print("  bin/craft-toolchain --install")
+    else:
+        print("Every required tool is present.")
+    if optional_missing:
+        print("")
+        print("%d optional tool(s) missing. Add --all to install those too." % len(optional_missing))
+
+
+# ---------------------------------------------------------------------------
+# Installing
+# ---------------------------------------------------------------------------
+
+
+def run_installs(records, manager, install_all, allow_repo_change):
+    """Install what is missing. Return 0 on success."""
+    wanted = [
+        record
+        for record in records
+        if not record["path"] and (record["required"] or install_all)
+    ]
+    if not wanted:
+        print("Nothing to install.")
+        return 0
+
+    blocked = [record for record in wanted if not record["install"]]
+    for record in blocked:
+        sys.stderr.write(
+            "No installer for %s here. Install one of %s by hand.\n"
+            % (record["id"], ", ".join(str(a) for a in record["accepts"]))
+        )
+
+    if manager in REPO_CHANGING and not allow_repo_change:
+        sys.stderr.write(
+            "\n%s writes the new dependency into this repository's own files.\n"
+            "That is a change to the repository, not to your machine, so it needs\n"
+            "a decision. Re-run with --allow-repo-change when that is what you want,\n"
+            "or pick another installer with --manager pipx.\n" % manager
+        )
+        return 2
+
+    failures = 0
+    for record in wanted:
+        if not record["install"]:
+            failures += 1
+            continue
+        argv = record["install"]["argv"]
+        print("")
+        print("$ %s" % " ".join(argv))
+        try:
+            finished = subprocess.run(argv, check=False)
+        except OSError as error:
+            sys.stderr.write("could not run it: %s\n" % error)
+            failures += 1
+            break
+        if finished.returncode != 0:
+            sys.stderr.write(
+                "\n%s exited %d. Nothing after it was attempted.\n"
+                % (argv[0], finished.returncode)
+            )
+            failures += 1
+            break
+
+    print("")
+    if failures:
+        print("Install did not finish. Report this as `blocked`, and say which tool.")
+        return 1
+    print("Install finished. Proving it:")
+    return 0
+
+
+def stack_config(root, wanted=None):
+    """Return {"tools": [...], "forbidden": [...]} for the stacks of root.
+
+    Django uses config/toolchain.json. Every other stack adds the toolchain list
+    of its stack.json, each tool tagged with its stack. A tool id two stacks
+    share is listed once per stack, so "lint" for Go and "lint" for Node are
+    two rows.
+    """
+    base = read_json(CONFIG, {})
+    try:
+        import craft_stack
+
+        ids = [wanted] if wanted else craft_stack.stack_ids(str(root))
+    except Exception:
+        return base
+    tools = []
+    forbidden = []
+    for stack_id in ids:
+        listed = craft_stack.toolchain_for(stack_id)
+        if listed is None:
+            for tool in base.get("tools", []):
+                tools.append(dict(tool, id="%s:%s" % (stack_id, tool.get("id", "")) if len(ids) > 1 else tool.get("id", "")))
+            forbidden.extend(base.get("forbidden", []))
+        else:
+            for tool in listed:
+                tagged = dict(tool)
+                tagged["id"] = "%s:%s" % (stack_id, tool.get("id", ""))
+                tagged.setdefault("source", "stacks/%s/stack.json" % stack_id)
+                tools.append(tagged)
+    return {"tools": tools, "forbidden": forbidden}
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print((__doc__ or "").strip())
+        return 0
+
+    root = host_root()
+    config = stack_config(root, argument(argv, "--stack"))
+    if not config.get("tools"):
+        sys.stderr.write("config/toolchain.json is missing or names no tool.\n")
+        return 2
+
+    detected, why = detect_manager(root)
+    manager = argument(argv, "--manager", detected)
+    if manager != detected:
+        why = "chosen with --manager"
+    known = ("uv", "poetry", "pipenv", "pip", "pipx", "pip-user")
+    if manager not in known:
+        sys.stderr.write("--manager must be one of: %s\n" % ", ".join(known))
+        return 2
+
+    records = survey(config, manager)
+    forbidden = forbidden_present(config)
+    uses_django_tools = any(":" not in str(tool.get("id", "")) or str(tool.get("id", "")).startswith("django:")
+                            for tool in config.get("tools", []))
+    note = container_note() if uses_django_tools else ""
+    warning = externally_managed_note(manager)
+
+    if "--json" in argv:
+        print(json.dumps(
+            {
+                "host_root": str(root),
+                "manager": manager,
+                "manager_reason": why,
+                "note": note,
+                "warning": warning,
+                "tools": records,
+                "forbidden_present": forbidden,
+                "missing_required": [r["id"] for r in records if r["required"] and not r["path"]],
+            },
+            indent=2,
+        ))
+        return 1 if any(r["required"] and not r["path"] for r in records) else 0
+
+    if "--install" in argv:
+        print_report(records, manager, why, forbidden, note, root, warning)
+        print("")
+        print("=== installing ===")
+        code = run_installs(
+            records,
+            manager,
+            install_all="--all" in argv,
+            allow_repo_change="--allow-repo-change" in argv,
+        )
+        if code != 0:
+            return code
+        records = survey(config, manager)
+        print_report(records, manager, why, forbidden_present(config), note, root, warning)
+        return 1 if any(r["required"] and not r["path"] for r in records) else 0
+
+    print_report(records, manager, why, forbidden, note, root, warning)
+    return 1 if any(r["required"] and not r["path"] for r in records) else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as error:
+        sys.stderr.write("craft-toolchain could not finish: %s: %s\n" % (type(error).__name__, error))
+        sys.exit(1)

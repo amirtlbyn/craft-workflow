@@ -1,0 +1,944 @@
+#!/usr/bin/env python3
+"""craft-doctor - health check for the craft-workflow plugin and its host repository.
+
+It answers one question: is this workflow configured well enough to trust what it
+says? Every check reports PASS, FAIL, SKIP or INFO.
+
+    PASS  the check ran and the thing is correct
+    FAIL  the check ran and the thing is wrong. This sets the exit code to 1
+    SKIP  the check could not run, and that is acceptable
+    INFO  informational only. It never changes the exit code
+
+The plugin root is the parent of this script. The host repository is the closest
+directory at or above the working directory that holds a .git entry.
+
+Usage:
+    craft-doctor                     human-readable report
+    craft-doctor --json              the same results as JSON on stdout
+    craft-doctor --skip commands     do not run one group of checks
+
+Group names for --skip: config, standards, skills, agents, commands,
+"host documents", host, hooks, stacks, mod, deciders, codex. Repeat the flag for more than one. CI
+uses --skip commands, because the section 6 commands belong to the host
+repository and are never installed beside this plugin.
+
+This script reads. It never writes a file and never mutates git.
+"""
+
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+WORKFLOW_PATH = PLUGIN_ROOT / "config" / "workflow.md"
+MANIFEST_PATH = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+
+CODE_SPAN = re.compile(r"`([^`]+)`")
+TABLE_SEPARATOR = re.compile(r"^:?-{3,}:?$")
+
+# The three rows of workflow.md section 6 that name a real executable. The
+# Format row is prose ("detect black or pyink"), so it is reported, not probed.
+PROBED_CHECK_ROWS = ("tests", "lint", "import order")
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+
+def find_host_root(start):
+    """Return the closest directory at or above start that holds a .git entry."""
+    path = pathlib.Path(start).resolve()
+    for candidate in [path] + list(path.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return path
+
+
+def read_text(path):
+    """Return the text of path, or an empty string when it cannot be read."""
+    try:
+        return pathlib.Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def markdown_tables(text):
+    """Return every pipe table in text as a (header_cells, data_rows) pair."""
+    tables = []
+    header = None
+    rows = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        is_table_line = stripped.startswith("|") and stripped.endswith("|")
+        if is_table_line:
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            if header is None:
+                header = cells
+                rows = []
+            elif all(TABLE_SEPARATOR.match(cell) for cell in cells):
+                continue
+            else:
+                rows.append(cells)
+            continue
+        if header is not None and rows:
+            tables.append((header, rows))
+        header = None
+        rows = None
+    if header is not None and rows:
+        tables.append((header, rows))
+    return tables
+
+
+def workflow_section(text, number):
+    """Return the body of the '## <number>. ...' section of workflow.md."""
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.startswith("## %d." % number):
+            start = index + 1
+            break
+    if start is None:
+        return ""
+    for index in range(start, len(lines)):
+        if lines[index].startswith("## "):
+            return "\n".join(lines[start:index])
+    return "\n".join(lines[start:])
+
+
+def table_by_first_header(text, first_header_cell):
+    """Return the rows of the first table whose first header cell matches."""
+    for header, rows in markdown_tables(text):
+        if header and header[0].strip().lower() == first_header_cell.lower():
+            return rows
+    return []
+
+
+def code_spans(cell):
+    """Return every backticked token in a table cell, in order."""
+    return CODE_SPAN.findall(cell)
+
+
+def plugin_version():
+    """Return the version string from plugin.json, or 'unknown'."""
+    try:
+        return json.loads(read_text(MANIFEST_PATH)).get("version", "unknown")
+    except ValueError:
+        return "unknown"
+
+
+def command_resolves(executable):
+    """Report whether executable can be launched. The real command never runs.
+
+    A non-zero exit still counts as resolvable: the point is that the binary
+    exists, not that it supports --version. Only a failure to spawn the process
+    means the command is unresolvable, and --help would fail the same way.
+    """
+    try:
+        subprocess.run(
+            [executable, "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    except subprocess.TimeoutExpired:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def script_path_from_hook_command(command):
+    """Return the script path a hook command string points at, or None.
+
+    Hook commands look like  "${CLAUDE_PLUGIN_ROOT}"/scripts/name.py . Substitute
+    the plugin root, drop the quoting, and take the first word.
+    """
+    text = str(command)
+    text = text.replace("${CLAUDE_PLUGIN_ROOT}", str(PLUGIN_ROOT))
+    text = text.replace("$CLAUDE_PLUGIN_ROOT", str(PLUGIN_ROOT))
+    text = text.replace('"', "").replace("'", "")
+    words = text.split()
+    if not words:
+        return None
+    return pathlib.Path(words[0])
+
+
+# ---------------------------------------------------------------------------
+# The report
+# ---------------------------------------------------------------------------
+
+
+class Report:
+    """A flat list of check results, grouped for printing."""
+
+    def __init__(self):
+        self.results = []
+
+    def add(self, group, status, check, detail=""):
+        self.results.append(
+            {"group": group, "status": status, "check": check, "detail": detail}
+        )
+
+    def counts(self):
+        counts = {"PASS": 0, "FAIL": 0, "SKIP": 0, "INFO": 0}
+        for result in self.results:
+            counts[result["status"]] = counts.get(result["status"], 0) + 1
+        return counts
+
+    def failed(self):
+        return any(result["status"] == "FAIL" for result in self.results)
+
+
+# ---------------------------------------------------------------------------
+# Checks
+# ---------------------------------------------------------------------------
+
+
+def check_standards(report, workflow_text):
+    """The four vendored standards are present and match SOURCE.lock."""
+    group = "standards"
+    lock_path = PLUGIN_ROOT / "standards" / "SOURCE.lock"
+    lock_entries = {}
+
+    if not lock_path.exists():
+        report.add(
+            group,
+            "FAIL",
+            "standards/SOURCE.lock",
+            "missing. Regenerate it, or the standards have no provenance",
+        )
+    else:
+        try:
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            for document in lock.get("documents", []):
+                lock_entries[document.get("filename")] = document
+            report.add(
+                group,
+                "PASS",
+                "standards/SOURCE.lock",
+                "parses, %d document(s) recorded" % len(lock_entries),
+            )
+        except (ValueError, AttributeError, TypeError) as error:
+            report.add(group, "FAIL", "standards/SOURCE.lock", "does not parse: %s" % error)
+
+    section = workflow_section(workflow_text, 1)
+    rows = table_by_first_header(section, "Role")
+    if not rows:
+        report.add(
+            group,
+            "FAIL",
+            "config/workflow.md section 1",
+            "the Role table could not be read, so no standard could be checked",
+        )
+        return
+
+    standards_paths = []
+    other_paths = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        for token in code_spans(row[1]):
+            if token.startswith("standards/"):
+                standards_paths.append(token)
+            else:
+                other_paths.append(token)
+
+    if len(standards_paths) != 4:
+        report.add(
+            group,
+            "INFO",
+            "config/workflow.md section 1",
+            "names %d standards/ document(s); the README describes four"
+            % len(standards_paths),
+        )
+
+    for relative in standards_paths:
+        path = PLUGIN_ROOT / relative
+        filename = pathlib.PurePosixPath(relative).name
+        if not path.exists():
+            report.add(
+                group, "FAIL", relative, "named in workflow.md section 1 but not on disk"
+            )
+            continue
+        report.add(group, "PASS", relative, "present")
+
+        entry = lock_entries.get(filename)
+        if entry is None:
+            report.add(group, "SKIP", relative + " sha256", "no entry in SOURCE.lock")
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if digest == entry.get("sha256"):
+            report.add(group, "PASS", relative + " sha256", "matches SOURCE.lock")
+        else:
+            report.add(
+                group,
+                "FAIL",
+                relative + " sha256",
+                "disk %s, lock %s. Re-sync, then regenerate SOURCE.lock"
+                % (digest[:12], str(entry.get("sha256"))[:12]),
+            )
+
+    for relative in other_paths:
+        path = PLUGIN_ROOT / relative
+        report.add(
+            group,
+            "INFO",
+            relative,
+            "also named in section 1: %s" % ("present" if path.exists() else "ABSENT"),
+        )
+
+
+def check_skills(report, workflow_text):
+    """Every skill named in workflow.md section 5 exists on disk."""
+    group = "skills"
+    section = workflow_section(workflow_text, 5)
+    rows = table_by_first_header(section, "Trigger")
+    if not rows:
+        report.add(
+            group,
+            "FAIL",
+            "config/workflow.md section 5",
+            "the Trigger table could not be read, so no skill could be checked",
+        )
+        return
+
+    names = []
+    for row in rows:
+        if len(row) < 2:
+            continue
+        for token in code_spans(row[1]):
+            if token not in names:
+                names.append(token)
+
+    if not names:
+        report.add(group, "FAIL", "config/workflow.md section 5", "names no skill")
+        return
+
+    for name in names:
+        skill_file = PLUGIN_ROOT / "skills" / name / "SKILL.md"
+        if skill_file.exists():
+            report.add(group, "PASS", "skills/%s" % name, "SKILL.md present")
+        else:
+            report.add(
+                group,
+                "FAIL",
+                "skills/%s" % name,
+                "named in workflow.md section 5, but %s is missing"
+                % skill_file.relative_to(PLUGIN_ROOT),
+            )
+
+    # The other direction: a skill on disk that section 5 does not name is never
+    # routed by the craft skill. It still loads when a command or the developer
+    # asks for it by name, so this is information, not a fault.
+    skills_directory = PLUGIN_ROOT / "skills"
+    if skills_directory.is_dir():
+        for child in sorted(skills_directory.iterdir()):
+            if not (child / "SKILL.md").is_file():
+                continue
+            if child.name in names or child.name == "craft":
+                continue
+            report.add(
+                group,
+                "INFO",
+                "skills/%s" % child.name,
+                "on disk, but workflow.md section 5 does not name it, so /craft "
+                "never routes to it",
+            )
+
+
+def check_agents(report, workflow_text):
+    """Every reviewer named in workflow.md section 3 exists in agents/."""
+    group = "agents"
+    section = workflow_section(workflow_text, 3)
+    rows = table_by_first_header(section, "Reviewer")
+    if not rows:
+        report.add(
+            group,
+            "FAIL",
+            "config/workflow.md section 3",
+            "the Reviewer table could not be read, so no agent could be checked",
+        )
+        return
+
+    names = []
+    for row in rows:
+        if not row:
+            continue
+        for token in code_spans(row[0]):
+            if token not in names:
+                names.append(token)
+
+    if not names:
+        report.add(group, "FAIL", "config/workflow.md section 3", "names no reviewer")
+        return
+
+    for name in names:
+        agent_file = PLUGIN_ROOT / "agents" / ("%s.md" % name)
+        if agent_file.exists():
+            report.add(group, "PASS", "agents/%s.md" % name, "present")
+        else:
+            report.add(
+                group,
+                "FAIL",
+                "agents/%s.md" % name,
+                "named in workflow.md section 3 but not on disk",
+            )
+
+    # section 2 names coder as the project-route implementer. Nothing else
+    # checks that it stays on disk.
+    if "`coder`" in workflow_section(workflow_text, 2):
+        coder = PLUGIN_ROOT / "agents" / "coder.md"
+        report.add(
+            group,
+            "PASS" if coder.exists() else "FAIL",
+            "agents/coder.md",
+            "present" if coder.exists() else "named in workflow.md section 2 but not on disk",
+        )
+
+    # Every lens section 3 routes must have its file, or the reviewer is told
+    # to read a checklist that does not exist.
+    lens_rows = table_by_first_header(section, "Lens")
+    lens_names = []
+    for row in lens_rows or []:
+        for token in code_spans(row[0]) if row else []:
+            if token not in lens_names:
+                lens_names.append(token)
+    if not lens_names:
+        report.add(group, "FAIL", "config/workflow.md section 3", "the Lens table names no lens")
+    for lens in lens_names:
+        relative = "skills/review-protocol/lenses/%s.md" % lens
+        present = (PLUGIN_ROOT / relative).exists()
+        report.add(
+            group,
+            "PASS" if present else "FAIL",
+            relative,
+            "present" if present else "routed in workflow.md section 3 but not on disk",
+        )
+
+
+def check_verification_commands(report, workflow_text):
+    """The Tests, Lint and Import-order commands of section 6 are resolvable."""
+    group = "commands"
+    section = workflow_section(workflow_text, 6)
+    rows = table_by_first_header(section, "Check")
+    if not rows:
+        report.add(
+            group,
+            "FAIL",
+            "config/workflow.md section 6",
+            "the Check table could not be read, so no command could be probed",
+        )
+        return
+
+    for row in rows:
+        if len(row) < 2:
+            continue
+        label = row[0].strip()
+        cell = row[1].strip()
+        if label.lower() not in PROBED_CHECK_ROWS:
+            report.add(group, "INFO", "section 6: %s" % label, cell or "(blank)")
+            continue
+
+        spans = code_spans(cell)
+        if not spans:
+            report.add(
+                group,
+                "SKIP",
+                "section 6: %s" % label,
+                "no command set. The workflow discovers it at run time",
+            )
+            continue
+
+        command = spans[0]
+        words = command.split()
+        if not words:
+            report.add(group, "SKIP", "section 6: %s" % label, "the command is empty")
+            continue
+
+        executable = words[0]
+        note = ""
+        if len(words) > 1 and executable in ("docker", "podman"):
+            note = " The rest of the command runs inside the container and is not probed."
+
+        if command_resolves(executable):
+            report.add(
+                group,
+                "PASS",
+                "section 6: %s" % label,
+                "%s is on PATH. Command: %s%s" % (executable, command, note),
+            )
+        else:
+            report.add(
+                group,
+                "FAIL",
+                "section 6: %s" % label,
+                "%s is not on PATH, so this check can never run. Command: %s"
+                % (executable, command),
+            )
+
+
+def check_plans_directory(report, host_root):
+    """.claude/specs/ in the host repository is writable or absent, and ACTIVE resolves."""
+    group = "host"
+    specs = host_root / ".claude" / "specs"
+    if not specs.exists():
+        report.add(
+            group,
+            "SKIP",
+            ".claude/specs/",
+            "absent. bin/craft-spec new creates it when the first spec starts",
+        )
+    elif not specs.is_dir():
+        report.add(group, "FAIL", ".claude/specs/", "exists but is not a directory")
+    elif os.access(str(specs), os.W_OK | os.X_OK):
+        report.add(group, "PASS", ".claude/specs/", "present and writable")
+        active = specs / "ACTIVE"
+        if active.is_file():
+            name = active.read_text(encoding="utf-8").strip()
+            spec_md = specs / name / "spec.md"
+            report.add(
+                group,
+                "PASS" if spec_md.is_file() else "FAIL",
+                ".claude/specs/ACTIVE",
+                ("names %s" % name)
+                if spec_md.is_file()
+                else "names %r, which has no spec.md. Fix ACTIVE or run bin/craft-spec close" % name,
+            )
+    else:
+        report.add(
+            group,
+            "FAIL",
+            ".claude/specs/",
+            "present but not writable, so no spec can be saved",
+        )
+
+    legacy = host_root / ".claude" / "plans" / "ACTIVE"
+    if legacy.is_file():
+        report.add(
+            group,
+            "INFO",
+            ".claude/plans/ACTIVE",
+            "a plan from version 0.2 is still active. /progress reads it. New work uses .claude/specs/",
+        )
+
+
+def check_commands_on_disk(report):
+    """The bin/ commands the workflow names exist and are executable."""
+    group = "bin"
+    for name in (
+        "craft-spec",
+        "craft-approve",
+        "craft-check",
+        "craft-std",
+        "craft-jev",
+        "craft-session",
+        "craft-doctor",
+        "craft-toolchain",
+        "craft-sync-codex",
+    ):
+        path = PLUGIN_ROOT / "bin" / name
+        if not path.exists():
+            report.add(group, "FAIL", "bin/%s" % name, "missing")
+        elif not os.access(str(path), os.X_OK):
+            report.add(group, "FAIL", "bin/%s" % name, "not executable. Run: chmod +x %s" % path)
+        else:
+            report.add(group, "PASS", "bin/%s" % name, "present and executable")
+
+    # The optional Jev layer: its config must parse, and it must say where to call.
+    jev_config = PLUGIN_ROOT / "config" / "jev.json"
+    if jev_config.exists():
+        try:
+            data = json.loads(jev_config.read_text(encoding="utf-8"))
+            stages = data.get("stages") or {}
+            approve = data.get("approve") or {}
+            if approve and not ((approve.get("questions") or {}).get("verdict") and approve.get("ask_patterns")):
+                report.add(group, "FAIL", "config/jev.json approve", "needs a verdict question and ask_patterns")
+            if data.get("model") and data.get("endpoint") and stages.get("route") and stages.get("review"):
+                report.add(group, "PASS", "config/jev.json", "parses, model %s" % data.get("model"))
+            else:
+                report.add(group, "FAIL", "config/jev.json", "needs model, endpoint, and route and review stages")
+        except ValueError as error:
+            report.add(group, "FAIL", "config/jev.json", "does not parse: %s" % error)
+
+
+def check_optional_documents(report, workflow_text, host_root):
+    """Report which optional host documents of section 1 are present. Informational."""
+    group = "host documents"
+    section = workflow_section(workflow_text, 1)
+    rows = table_by_first_header(section, "Purpose")
+    if not rows:
+        report.add(
+            group,
+            "SKIP",
+            "config/workflow.md section 1",
+            "the optional-document table could not be read",
+        )
+        return
+
+    for row in rows:
+        if len(row) < 2:
+            continue
+        for token in code_spans(row[1]):
+            if "<dir>" in token:
+                report.add(
+                    group,
+                    "INFO",
+                    token,
+                    "a per-directory convention, not one fixed path. Not checked",
+                )
+                continue
+            path = host_root / token
+            report.add(group, "INFO", token, "found" if path.exists() else "absent")
+
+
+def check_codex_sync(report):
+    """.agents/skills/, .codex/agents/, and AGENTS.md are in sync with their
+    Claude-side source (skills/, commands/, agents/). See bin/craft-sync-codex
+    --help for what it generates and why."""
+    group = "codex"
+    sync_script = PLUGIN_ROOT / "bin" / "craft-sync-codex"
+    if not sync_script.exists():
+        report.add(
+            group,
+            "SKIP",
+            "bin/craft-sync-codex",
+            "absent, so Codex sync is not checked",
+        )
+        return
+
+    try:
+        result = subprocess.run(
+            [str(sync_script), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except OSError as error:
+        report.add(group, "FAIL", "bin/craft-sync-codex", "could not run: %s" % error)
+        return
+
+    try:
+        rows = json.loads(result.stdout)
+    except ValueError:
+        report.add(
+            group,
+            "FAIL",
+            "bin/craft-sync-codex --json",
+            "did not produce parseable JSON on stdout",
+        )
+        return
+
+    if not rows:
+        report.add(group, "FAIL", "bin/craft-sync-codex", "reported nothing to check")
+        return
+
+    for row in rows:
+        report.add(
+            group,
+            row.get("status", "FAIL"),
+            row.get("check", "?"),
+            row.get("detail", ""),
+        )
+
+
+def check_hooks(report):
+    """hooks/hooks.json parses and every script it names exists and is executable."""
+    group = "hooks"
+    hooks_path = PLUGIN_ROOT / "hooks" / "hooks.json"
+
+    # hooks/hooks.json is the standard location and the host loads it on its own.
+    # A "hooks" key in the manifest naming that same file registers it twice, and
+    # the whole plugin then fails to load. The key is only for extra hook files.
+    try:
+        manifest = json.loads(read_text(MANIFEST_PATH))
+        declared = manifest.get("hooks")
+        names = [declared] if isinstance(declared, str) else (declared or [])
+        for name in names if isinstance(names, list) else []:
+            if str(name).lstrip("./") == "hooks/hooks.json":
+                report.add(
+                    group,
+                    "FAIL",
+                    ".claude-plugin/plugin.json",
+                    'the "hooks" key names the standard hooks/hooks.json, which the '
+                    "host already loads. That is a duplicate and the plugin will not "
+                    "load. Remove the key",
+                )
+    except ValueError:
+        report.add(group, "FAIL", ".claude-plugin/plugin.json", "does not parse")
+
+    if not hooks_path.exists():
+        report.add(
+            group,
+            "SKIP",
+            "hooks/hooks.json",
+            "absent, so this plugin registers no hook",
+        )
+        return
+
+    try:
+        data = json.loads(hooks_path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        report.add(group, "FAIL", "hooks/hooks.json", "does not parse: %s" % error)
+        return
+    report.add(group, "PASS", "hooks/hooks.json", "parses")
+
+    registered = []
+    for event, matcher_groups in (data.get("hooks") or {}).items():
+        for matcher_group in matcher_groups or []:
+            for hook in (matcher_group or {}).get("hooks") or []:
+                if hook.get("type") == "command":
+                    registered.append((event, hook.get("command", "")))
+
+    if not registered:
+        report.add(
+            group, "SKIP", "hooks/hooks.json scripts", "no command hook is registered"
+        )
+        return
+
+    for event, command in registered:
+        script = script_path_from_hook_command(command)
+        label = "%s -> %s" % (event, command)
+        if script is None:
+            report.add(group, "FAIL", label, "the command string is empty")
+            continue
+        if not script.exists():
+            report.add(group, "FAIL", label, "%s does not exist" % script)
+            continue
+        if not os.access(str(script), os.X_OK):
+            report.add(
+                group,
+                "FAIL",
+                label,
+                "%s is not executable. Run: chmod +x %s" % (script, script),
+            )
+            continue
+        report.add(group, "PASS", label, "present and executable")
+
+
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
+
+
+def print_human(report, host_root):
+    print("craft-doctor - craft-workflow %s" % plugin_version())
+    print("  plugin root  %s" % PLUGIN_ROOT)
+    print("  host repo    %s" % host_root)
+
+    width = 4
+    for result in report.results:
+        width = max(width, len(result["check"]))
+    width = min(width, 52)
+
+    current_group = None
+    for result in report.results:
+        if result["group"] != current_group:
+            current_group = result["group"]
+            print("")
+            print(current_group)
+        print(
+            "  %-4s  %-*s  %s"
+            % (result["status"], width, result["check"], result["detail"])
+        )
+
+    counts = report.counts()
+    print("")
+    print(
+        "summary  %d PASS  %d FAIL  %d SKIP  %d INFO"
+        % (counts["PASS"], counts["FAIL"], counts["SKIP"], counts["INFO"])
+    )
+    if counts["FAIL"]:
+        print("Fix every FAIL above. The workflow cannot prove a check it cannot run.")
+
+
+def print_json(report, host_root):
+    counts = report.counts()
+    payload = {
+        "plugin": "craft-workflow",
+        "version": plugin_version(),
+        "plugin_root": str(PLUGIN_ROOT),
+        "host_root": str(host_root),
+        "results": report.results,
+        "summary": counts,
+        "exit_code": 1 if report.failed() else 0,
+    }
+    print(json.dumps(payload, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def skipped_groups(argv):
+    """Return the group names every --skip flag names, in lower case."""
+    groups = set()
+    for index, value in enumerate(argv):
+        if value == "--skip" and index + 1 < len(argv):
+            groups.add(argv[index + 1].strip().lower())
+    return groups
+
+
+def check_stacks(report):
+    """Every stack pack parses, and the skills, standards and lens notes it names exist."""
+    group = "stacks"
+    packs = sorted((PLUGIN_ROOT / "stacks").glob("*/stack.json"))
+    if not packs:
+        report.add(group, "FAIL", "stacks/", "no stack pack. The workflow cannot recognize a repository")
+        return
+    for path in packs:
+        relative = path.relative_to(PLUGIN_ROOT).as_posix()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError as error:
+            report.add(group, "FAIL", relative, "does not parse: %s" % error)
+            continue
+        missing = []
+        for skill in data.get("skills") or []:
+            if not (PLUGIN_ROOT / "skills" / skill / "SKILL.md").is_file():
+                missing.append("skill %s" % skill)
+        concurrency_skill = (data.get("concurrency") or {}).get("skill")
+        if concurrency_skill and not (PLUGIN_ROOT / "skills" / concurrency_skill / "SKILL.md").is_file():
+            missing.append("skill %s" % concurrency_skill)
+        for standard in data.get("standards") or []:
+            if not list((PLUGIN_ROOT / "standards").glob(standard + "*.md")):
+                missing.append("standard %s" % standard)
+        lenses = data.get("lenses")
+        if lenses and not (PLUGIN_ROOT / lenses).is_file():
+            missing.append("lens notes %s" % lenses)
+        for label, candidates in (data.get("checks") or {}).items():
+            if label != "source" and not isinstance(candidates, list):
+                missing.append("checks.%s is not a list" % label)
+        if not (data.get("detect") or {}):
+            missing.append("detect rules")
+        if missing:
+            report.add(group, "FAIL", relative, "names what is not there: %s" % ", ".join(missing))
+        else:
+            report.add(group, "PASS", relative, "%s %s · skills %s" % (
+                data.get("emoji", ""), data.get("id"), ", ".join(data.get("skills") or [])))
+
+
+def check_mod(report):
+    """hooks/mod.json parses, the manifest names it, and the hooks module is on disk."""
+    group = "mod"
+    path = PLUGIN_ROOT / "hooks" / "mod.json"
+    if not path.is_file():
+        report.add(group, "SKIP", "hooks/mod.json", "absent. The plugin works without its mod")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        report.add(group, "FAIL", "hooks/mod.json", "does not parse: %s" % error)
+        return
+    modules = data.get("modules") or []
+    if len(modules) != 1:
+        report.add(group, "FAIL", "hooks/mod.json", "names %d modules; a plugin has exactly one" % len(modules))
+        return
+    module = (path.parent / modules[0]).resolve()
+    report.add(group, "PASS" if module.is_file() else "FAIL", "hooks module",
+               module.relative_to(PLUGIN_ROOT).as_posix() if module.is_file() else "%s is missing" % modules[0])
+    try:
+        manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    declared = manifest.get("hooks")
+    declared = declared if isinstance(declared, list) else [declared]
+    named = any(str(item or "").lstrip("./") == "hooks/mod.json" for item in declared)
+    report.add(group, "PASS" if named else "FAIL", ".claude-plugin/plugin.json hooks",
+               "names hooks/mod.json" if named else "does not name hooks/mod.json, so Claude Code never loads the mod")
+    report.add(group, "INFO", "claude plugin validate .", "the engine's own check of the module. Run it after any change")
+
+
+def check_deciders(report):
+    """config/deciders.json parses, and every provider it routes to is defined."""
+    group = "deciders"
+    path = PLUGIN_ROOT / "config" / "deciders.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        report.add(group, "FAIL", "config/deciders.json", "does not parse: %s" % error)
+        return
+    providers = data.get("providers") or {}
+    for key in ("order", "council", "approve_providers"):
+        unknown = [name for name in data.get(key) or [] if name not in providers]
+        report.add(group, "FAIL" if unknown else "PASS", "deciders %s" % key,
+                   "unknown provider(s): %s" % ", ".join(unknown) if unknown else ", ".join(data.get(key) or []) or "empty")
+    for name, provider in sorted(providers.items()):
+        url = str((provider or {}).get("base_url") or "")
+        if url and not (url.startswith("https://") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1")):
+            report.add(group, "FAIL", "deciders.%s" % name, "base_url must be https, or http on this machine")
+
+
+def main(argv):
+    as_json = "--json" in argv
+    if "-h" in argv or "--help" in argv:
+        print((__doc__ or "").strip())
+        return 0
+
+    skip = skipped_groups(argv)
+    host_root = find_host_root(os.getcwd())
+    workflow_text = read_text(WORKFLOW_PATH)
+
+    report = Report()
+    if not workflow_text:
+        report.add(
+            "config",
+            "FAIL",
+            "config/workflow.md",
+            "missing or unreadable. Every routing check depends on it",
+        )
+    else:
+        report.add("config", "PASS", "config/workflow.md", "readable")
+        if "standards" not in skip:
+            check_standards(report, workflow_text)
+        if "skills" not in skip:
+            check_skills(report, workflow_text)
+        if "agents" not in skip:
+            check_agents(report, workflow_text)
+        if "commands" not in skip:
+            check_verification_commands(report, workflow_text)
+        if "host documents" not in skip:
+            check_optional_documents(report, workflow_text, host_root)
+
+    if "host" not in skip:
+        check_plans_directory(report, host_root)
+    if "bin" not in skip:
+        check_commands_on_disk(report)
+    if "hooks" not in skip:
+        check_hooks(report)
+    if "stacks" not in skip:
+        check_stacks(report)
+    if "mod" not in skip:
+        check_mod(report)
+    if "deciders" not in skip:
+        check_deciders(report)
+    if "codex" not in skip:
+        check_codex_sync(report)
+
+    for group in sorted(skip):
+        report.add("skipped", "SKIP", group, "not run: --skip %s" % group)
+
+    if as_json:
+        print_json(report, host_root)
+    else:
+        print_human(report, host_root)
+    return 1 if report.failed() else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except Exception as error:  # a doctor that dies silently is worse than none
+        sys.stderr.write("craft-doctor could not finish: %s: %s\n" % (type(error).__name__, error))
+        sys.exit(1)

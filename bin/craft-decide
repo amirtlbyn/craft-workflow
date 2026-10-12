@@ -1,0 +1,333 @@
+#!/usr/bin/env python3
+"""craft-decide - choose which AI deciders answer the workflow's typed questions.
+
+The workflow asks small typed questions: which route, which risk tier, which
+model writes the code, which skills and review lenses apply, and whether a tool
+call may run without a prompt. A decider answers them so Claude does not spend
+tokens on them. Jev is one decider. Free tiers (OpenRouter's free router, Groq,
+Gemini, Cerebras, Mistral, GitHub Models, Cloudflare), local models (Ollama,
+LM Studio), and Claude Haiku on your own plan are the others.
+
+Usage:
+    bin/craft-decide status [--json]
+    bin/craft-decide on | off                    the master switch (same as craft-jev on|off)
+    bin/craft-decide use P[,P ...]               mode first: try these in order
+    bin/craft-decide council P,P[,P ...]         mode council: ask these together, average them
+    bin/craft-decide mode first | council
+    bin/craft-decide approve-with P[,P ...]      which deciders may approve tool calls
+    bin/craft-decide set P model ID | base_url URL | send_request_text true|false | timeout_seconds N
+    bin/craft-decide unset P [field]
+    bin/craft-decide reset                       remove this repository's decider settings
+    bin/craft-decide test [P | all]              one tiny question to each, with the answer and the latency
+    bin/craft-decide discover P [--free]         the models a provider serves today
+    bin/craft-decide decide ...                  the same as bin/craft-jev decide ...
+
+Where settings live: config/deciders.json is the plugin's default. This
+repository's choices go to .claude/craft/deciders.json, which a plugin update
+never touches. CRAFT_DECIDERS=groq,ollama and CRAFT_DECIDER_MODE=council
+override both for one shell.
+
+Keys: each provider's key_env (OPENROUTER_API_KEY, GROQ_API_KEY, GEMINI_API_KEY,
+CEREBRAS_API_KEY, MISTRAL_API_KEY, GITHUB_TOKEN, CLOUDFLARE_API_TOKEN), or the
+file ~/.config/craft-workflow/<provider>.key. No key is ever written by this
+command.
+
+What leaves the machine: the request text (only for a provider with
+send_request_text true), the changed paths, and line counts. Never file
+contents. Secrets in the state are redacted first. A local provider sends
+nothing anywhere.
+
+Exit codes:
+    0   done
+    1   test: a provider failed. discover: the call failed
+    2   the arguments are wrong
+"""
+
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+import craft_state  # noqa: E402
+import deciders  # noqa: E402
+import jev_client  # noqa: E402
+
+TEST_QUESTIONS = {
+    "is_bug": {
+        "type": "noul",
+        "instructions": "Is the developer reporting a software defect?",
+        "criteria": {"true": "Something is broken.", "false": "A question or a feature request."},
+    },
+    "route": {
+        "type": "choice",
+        "instructions": "How much engineering process does this request need?",
+        "criteria": {
+            "quick": "A typo or a one-line fix with a known cause.",
+            "task": "One merge request with new logic.",
+            "project": "Several sessions or a schema change.",
+        },
+    },
+}
+TEST_STATE = {"request": "The login page returns a 500 error after the last deploy.", "paths": ["app/auth/views.py"]}
+SETTABLE = {"model": str, "base_url": str, "send_request_text": "bool", "timeout_seconds": float,
+            "max_tokens": int, "label": str}
+
+
+def names_argument(text, config):
+    names = [name.strip() for name in str(text or "").split(",") if name.strip()]
+    unknown = [name for name in names if not deciders.provider(config, name)]
+    return names, unknown
+
+
+def privacy_label(data):
+    if data.get("local"):
+        return "🔒 local"
+    trains = data.get("trains_on_data")
+    if trains is True:
+        return "⚠️  may train"
+    if trains == "maybe":
+        return "⚠️  may log"
+    return "no training"
+
+
+def command_status(argv, cwd):
+    config = deciders.load(cwd)
+    names = list((config.get("providers") or {}).keys())
+    order = config.get("order") or []
+    council = config.get("council") or []
+    approvers = config.get("approve_providers") or []
+    rows = []
+    for name in names:
+        data = deciders.provider(config, name)
+        ready, why = deciders.readiness(data)
+        rows.append({
+            "name": name, "label": data.get("label", name), "type": data.get("type"),
+            "model": data.get("model") or ("config/jev.json" if data.get("type") == "jev" else ""),
+            "ready": ready, "why": why, "free": bool(data.get("free")), "local": bool(data.get("local")),
+            "privacy": privacy_label(data), "request_text": bool(data.get("send_request_text", True)),
+            "in_order": name in order, "in_council": name in council, "approves": name in approvers,
+        })
+    report = {"enabled": jev_client.is_enabled(cwd), "mode": config.get("mode"), "order": order,
+              "council": council, "approve_providers": approvers, "providers": rows,
+              "override": str(craft_state.state_path(deciders.STATE_FILE, cwd)) if deciders.read_override(cwd) else ""}
+    if "--json" in argv:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+    print("🧠 deciders · %s · mode %s" % ("on" if report["enabled"] else "off (craft-decide on)", report["mode"]))
+    if report["mode"] == "council":
+        print("   council   %s (needs %s answers)" % (", ".join(council), config.get("min_council", 2)))
+    else:
+        print("   order     %s" % " → ".join(order))
+    print("   approvals %s" % (", ".join(approvers) or "none"))
+    if report["override"]:
+        print("   settings  %s" % report["override"])
+    print("")
+    print("   %-16s %-22s %-28s %-6s %-14s %s" % ("provider", "", "model", "cost", "privacy", "ready"))
+    for row in rows:
+        marks = "".join(("▶" if row["in_order"] else " ", "◆" if row["in_council"] else " "))
+        print("%s %-16s %-22s %-28s %-6s %-14s %s" % (
+            marks, row["name"], row["label"], (row["model"] or "—")[:28],
+            "free" if row["free"] else "paid", row["privacy"] + ("" if row["request_text"] else " ·no text"),
+            ("✅ " if row["ready"] else "❌ ") + row["why"]))
+    print("")
+    print("▶ in the order   ◆ in the council   ·no text = the request text stays on this machine")
+    return 0
+
+
+def command_switch(enabled, cwd):
+    return subprocess.call([str(PLUGIN_ROOT / "bin" / "craft-jev"), "on" if enabled else "off"], cwd=cwd or None)
+
+
+def command_use(argv, cwd):
+    config = deciders.load(cwd)
+    names, unknown = names_argument(argv[0] if argv else "", config)
+    if not names or unknown:
+        sys.stderr.write("use needs known provider names. Unknown: %s\n" % ", ".join(unknown or ["(none given)"]))
+        return 2
+    deciders.write_override({"order": names, "mode": "first"}, cwd)
+    print("Deciders: first of %s." % " → ".join(names))
+    return 0
+
+
+def command_council(argv, cwd):
+    config = deciders.load(cwd)
+    names, unknown = names_argument(argv[0] if argv else "", config)
+    if len(names) < 2 or unknown:
+        sys.stderr.write("council needs two or more known providers. Unknown: %s\n" % ", ".join(unknown or ["-"]))
+        return 2
+    deciders.write_override({"council": names, "mode": "council"}, cwd)
+    print("Deciders: a council of %s. Their answers are averaged." % ", ".join(names))
+    return 0
+
+
+def command_mode(argv, cwd):
+    if not argv or argv[0] not in deciders.MODES:
+        sys.stderr.write("mode needs first or council\n")
+        return 2
+    deciders.write_override({"mode": argv[0]}, cwd)
+    print("Decider mode: %s" % argv[0])
+    return 0
+
+
+def command_approve_with(argv, cwd):
+    config = deciders.load(cwd)
+    names, unknown = names_argument(argv[0] if argv else "", config)
+    if not names or unknown:
+        sys.stderr.write("approve-with needs known provider names\n")
+        return 2
+    deciders.write_override({"approve_providers": names}, cwd)
+    print("Tool-call approval asks: %s, the first that answers. bin/craft-jev approve on turns it on." % " → ".join(names))
+    return 0
+
+
+def command_set(argv, cwd):
+    if len(argv) < 3:
+        sys.stderr.write("set needs: <provider> <field> <value>\n")
+        return 2
+    name, field, value = argv[0], argv[1], " ".join(argv[2:])
+    config = deciders.load(cwd)
+    if not deciders.provider(config, name):
+        sys.stderr.write("unknown provider %s\n" % name)
+        return 2
+    if field not in SETTABLE:
+        sys.stderr.write("settable fields: %s\n" % ", ".join(SETTABLE))
+        return 2
+    kind = SETTABLE[field]
+    try:
+        if kind == "bool":
+            parsed = value.strip().lower() in ("true", "yes", "on", "1")
+        else:
+            parsed = kind(value)
+    except ValueError:
+        sys.stderr.write("%s must be a %s\n" % (field, getattr(kind, "__name__", kind)))
+        return 2
+    if field == "base_url" and not deciders.url_allowed(str(parsed)):
+        sys.stderr.write("base_url must be https, or http on this machine\n")
+        return 2
+    deciders.write_override({"providers": {name: {field: parsed}}}, cwd)
+    print("%s.%s = %s (this repository)" % (name, field, parsed))
+    return 0
+
+
+def command_unset(argv, cwd):
+    if not argv:
+        sys.stderr.write("unset needs a provider, and optionally a field\n")
+        return 2
+    if len(argv) == 1:
+        deciders.write_override({"providers": {argv[0]: None}}, cwd)
+    else:
+        deciders.write_override({"providers": {argv[0]: {argv[1]: None}}}, cwd)
+    print("Removed this repository's setting.")
+    return 0
+
+
+def command_reset(argv, cwd):
+    path = craft_state.state_path(deciders.STATE_FILE, cwd)
+    try:
+        if path.is_file():
+            path.unlink()
+    except OSError as error:
+        sys.stderr.write("could not remove %s: %s\n" % (path, error))
+        return 1
+    print("Decider settings for this repository removed. config/deciders.json applies.")
+    return 0
+
+
+def command_test(argv, cwd):
+    config = deciders.load(cwd)
+    wanted = argv[0] if argv and not argv[0].startswith("--") else ""
+    if wanted == "all":
+        names = list((config.get("providers") or {}).keys())
+    elif wanted:
+        names = [wanted]
+    else:
+        names = deciders.chain(config)
+    failed = 0
+    for name in names:
+        data = deciders.provider(config, name)
+        if data is None:
+            print("❌ %-16s unknown provider" % name)
+            failed += 1
+            continue
+        ready, why = deciders.readiness(data)
+        if not ready:
+            print("⏭  %-16s skipped: %s" % (name, why))
+            continue
+        try:
+            answers, meta = deciders.call_provider(config, name, TEST_QUESTIONS, TEST_STATE, cwd=cwd)
+        except jev_client.JevError as error:
+            print("❌ %-16s %s" % (name, error))
+            failed += 1
+            continue
+        bug = answers.get("is_bug", {}).get("noul")
+        route = answers.get("route", {})
+        print("✅ %-16s is_bug %s · route %s %.2f · %s ms · %s" % (
+            name, "?" if bug is None else "%.2f" % bug, route.get("choice", "?"),
+            float(route.get("confidence", 0.0)), meta.get("latency_ms"), meta.get("model")))
+    return 1 if failed else 0
+
+
+def command_discover(argv, cwd):
+    if not argv:
+        sys.stderr.write("discover needs a provider name\n")
+        return 2
+    config = deciders.load(cwd)
+    try:
+        models = deciders.discover(config, argv[0], only_free="--free" in argv)
+    except jev_client.JevError as error:
+        print("❌ %s: %s" % (argv[0], error))
+        return 1
+    if "--json" in argv:
+        print(json.dumps(models, indent=2))
+        return 0
+    for model in models:
+        print("  %s %-60s %s" % ("🆓" if model["free"] else "  ", model["id"],
+                                 "ctx %s" % model["context"] if model.get("context") else ""))
+    print("%d model(s). Pick one: bin/craft-decide set %s model <id>" % (len(models), argv[0]))
+    return 0
+
+
+def command_decide(argv, cwd):
+    return subprocess.call([str(PLUGIN_ROOT / "bin" / "craft-jev"), "decide"] + argv, cwd=cwd or None)
+
+
+COMMANDS = {
+    "status": command_status,
+    "use": command_use,
+    "council": command_council,
+    "mode": command_mode,
+    "approve-with": command_approve_with,
+    "set": command_set,
+    "unset": command_unset,
+    "reset": command_reset,
+    "test": command_test,
+    "discover": command_discover,
+    "decide": command_decide,
+}
+
+
+def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cwd = None
+    if "--cwd" in argv:
+        index = argv.index("--cwd")
+        cwd = argv[index + 1] if index + 1 < len(argv) else None
+        argv = argv[:index] + argv[index + 2:]
+    if not argv:
+        return command_status([], cwd)
+    if argv[0] in ("on", "off"):
+        return command_switch(argv[0] == "on", cwd)
+    if argv[0] not in COMMANDS:
+        print(__doc__.strip())
+        return 2
+    return COMMANDS[argv[0]](argv[1:], cwd)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

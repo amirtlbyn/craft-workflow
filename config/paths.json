@@ -1,0 +1,91 @@
+{
+  "comment": "The machine mirror of the path rules that config/workflow.md states in prose. workflow.md stays the human-readable source and wins every disagreement: change it first, then change this file to match. The hooks read this file so that a path question is answered the same way every time, instead of being re-inferred from prose on every turn. Matching uses fnmatch, so '*' crosses a directory separator: write '*/tests/*' and 'tests/*' as two patterns when you mean both. A glob that holds no '/' is also matched against the file name alone, so 'test_*.py' matches 'apps/wallet/tests/test_limit.py'. In this release two sets are read: protect_human_owned reads 'human_owned', and bin/craft-spec trace reads 'tests' to find the test files it maps to acceptance criteria. The spec gate (gate_spec) needs no glob set: it gates every path outside .claude/. The other five sets are recorded here for a route guard that is not wired yet. Nothing reads them today, so an entry there changes no behavior.",
+  "derived_from": {
+    "tests": "workflow.md section 3, logic lens row: 'tests'. Section 4: every acceptance criterion has one test that names its ID.",
+    "human_owned": "workflow.md section 1: every '*.human.md' document is marked 'No - human-owned'.",
+    "money": "workflow.md section 2: 'Never let quick touch: money ...'. Section 3, logic lens row: 'money'.",
+    "auth": "workflow.md section 2: 'authentication, authorization'. Section 3, security lens row: 'permissions, authentication, tokens'.",
+    "migrations": "workflow.md section 2: 'a schema migration' forces project. Section 3: logic and query lens rows.",
+    "models": "workflow.md section 3, query lens row: 'Models, managers, querysets'.",
+    "views": "workflow.md section 3, security lens row: 'Views, serializers'."
+  },
+  "tests": [
+    "tests/*",
+    "*/tests/*",
+    "test/*",
+    "*/test/*",
+    "test_*.py",
+    "*_test.py",
+    "tests.py",
+    "conftest.py",
+    "factories.py",
+    "TEST_SCENARIOS.md"
+  ],
+  "human_owned": [
+    "*.human.md"
+  ],
+  "money": [
+    "wallet/*",
+    "*/wallet/*",
+    "wallets/*",
+    "*/wallets/*",
+    "ledger/*",
+    "*/ledger/*",
+    "accounting/*",
+    "*/accounting/*",
+    "balance*.py",
+    "*/balance/*",
+    "payment*/*",
+    "*/payment*/*",
+    "withdraw*/*",
+    "*/withdraw*/*",
+    "deposit*/*",
+    "*/deposit*/*",
+    "transfer*/*",
+    "*/transfer*/*",
+    "settlement*/*",
+    "*/settlement*/*",
+    "fee*.py",
+    "commission*.py"
+  ],
+  "auth": [
+    "permissions.py",
+    "permission*.py",
+    "authentication.py",
+    "auth.py",
+    "backends.py",
+    "auth/*",
+    "*/auth/*",
+    "*/permissions/*",
+    "permissions/*",
+    "*token*.py",
+    "*otp*.py",
+    "*session*.py",
+    "*credential*.py",
+    "*password*.py"
+  ],
+  "migrations": [
+    "migrations/*.py",
+    "*/migrations/*.py"
+  ],
+  "models": [
+    "models.py",
+    "managers.py",
+    "querysets.py",
+    "models/*.py",
+    "*/models/*.py",
+    "managers/*.py",
+    "*/managers/*.py"
+  ],
+  "views": [
+    "views.py",
+    "viewsets.py",
+    "serializers.py",
+    "views/*.py",
+    "*/views/*.py",
+    "serializers/*.py",
+    "*/serializers/*.py",
+    "api.py",
+    "admin.py"
+  ]
+}

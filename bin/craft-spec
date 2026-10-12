@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""craft-spec - create, inspect, trace, and close the spec that drives a change.
+
+Usage:
+    bin/craft-spec new --route task|project --title "TITLE" [--key KEY]
+                       [--slug SLUG] [--checkpoint "CMD"]
+    bin/craft-spec status [--json]
+    bin/craft-spec trace [--session N] [--json]
+    bin/craft-spec close
+
+Commands:
+    new      Create .claude/specs/<date>-<slug>/ from the templates, make it the
+             active spec, and start a craft session on the route. The spec gate
+             is shut from this moment until bin/craft-approve records the
+             developer's approval. The project route also gets design.md.
+    status   The active spec: title, route, risk, approval state, task progress,
+             the next open task, and the checks recorded. It is the cheapest way
+             to resume work in a new session.
+    trace    Map every acceptance criterion of spec.md to the tests that name
+             its ID. Gate A needs one test per criterion. Exit 1 when a criterion
+             has no test. The result is recorded as a check when a session is
+             active. --session N limits it to the criteria that the
+             "## Session N" block of tasks.md lists on its "Covers:" line.
+    close    End the craft session, clear ACTIVE, and log the closing. The spec
+             directory stays as the record of what was agreed.
+
+Options:
+    --cwd PATH   Work against the repository that holds PATH.
+
+Exit codes:
+    0   done, or trace found a test for every criterion
+    1   the state could not be written, or trace found a criterion with no test
+    2   the arguments are wrong, or no spec is active
+"""
+
+import datetime
+import json
+import os
+import pathlib
+import re
+import sys
+
+PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+
+import craft_stack  # noqa: E402
+import craft_state  # noqa: E402
+
+TEMPLATES = PLUGIN_ROOT / "skills" / "spec" / "templates"
+ROUTES = ("task", "project")
+KEY_SHAPE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
+CRITERION_ROW = re.compile(r"^\|\s*([A-Z][A-Z0-9]*-\d+)\s*\|")
+SECTION = re.compile(r"^##\s+(.+?)\s*$")
+# How each language declares a test, so a reference names the right one. A
+# match's last non-empty group is the test's name.
+TEST_DEFS = {
+    ".py": [re.compile(r"^\s*(?:async\s+)?def\s+(test\w*)\s*\(")],
+    ".go": [
+        re.compile(r"^\s*func\s+(Test\w*|Fuzz\w*|Benchmark\w*|Example\w*)\s*\("),
+        re.compile(r"\bt\.Run\(\s*\"([^\"]+)\""),
+    ],
+    ".java": [re.compile(r"^\s*(?:public\s+|protected\s+|private\s+)?(?:static\s+)?void\s+(\w+)\s*\(")],
+    ".kt": [re.compile(r"^\s*fun\s+(?:`([^`]+)`|(\w+))\s*\(")],
+    "js": [re.compile(r"^\s*(?:it|test)(?:\.(?:only|skip|each\([^)]*\)|concurrent))?\s*\(\s*['\"`](.+?)['\"`]")],
+}
+JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
+# A line that sits above the test it describes: a comment, an annotation, or a
+# decorator. An ID on such a line belongs to the next test, not the last one.
+LEADING_LINE = re.compile(r"^\s*(//|#|/\*|\*|@)")
+LOOKAHEAD_LINES = 4
+SKIP_DIRECTORIES = {
+    ".git",
+    ".claude",
+    ".hg",
+    ".tox",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    "site-packages",
+    "build",
+    "dist",
+    ".mypy_cache",
+    ".pytest_cache",
+    "vendor",
+    "target",
+    ".gradle",
+    "coverage",
+}
+STOP_WORDS = {"a", "an", "the", "of", "for", "to", "and", "in", "on", "per", "with", "by"}
+
+
+def argument(argv, flag, default=None):
+    """Return the value after flag in argv, or default."""
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def slugify(text):
+    """Return a short lower-case slug for a title."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    words = [word for word in words if word not in STOP_WORDS] or words
+    return "-".join(words[:6])[:48].strip("-") or "spec"
+
+
+def default_key(title):
+    """Return the initials of a title's significant words, 2 to 4 letters."""
+    words = [word for word in re.findall(r"[A-Za-z0-9]+", title) if word.lower() not in STOP_WORDS]
+    key = "".join(word[0] for word in words[:4]).upper()
+    if len(key) < 2:
+        key = (re.sub(r"[^A-Za-z]", "", title).upper() + "XX")[:3]
+    if not key[0].isalpha():
+        key = "S" + key
+    return key[:10]
+
+
+def render(template_name, values):
+    """Return a template with its {placeholders} filled."""
+    text = (TEMPLATES / template_name).read_text(encoding="utf-8")
+    for name, value in values.items():
+        text = text.replace("{%s}" % name, value)
+    return text
+
+
+def append_log(directory, heading, lines):
+    """Append one entry to log.md. Return True on success."""
+    try:
+        entry = "\n## %s — %s\n%s\n" % (
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            heading,
+            "\n".join(lines),
+        )
+        with open(directory / "log.md", "a", encoding="utf-8") as handle:
+            handle.write(entry)
+        return True
+    except OSError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# new
+# ---------------------------------------------------------------------------
+
+
+def command_new(argv):
+    route = str(argument(argv, "--route", "") or "").strip().lower()
+    title = str(argument(argv, "--title", "") or "").strip()
+    if route not in ROUTES or not title:
+        sys.stderr.write('new needs --route task|project and --title "TITLE"\n')
+        return 2
+    key = str(argument(argv, "--key", "") or default_key(title)).strip().upper()
+    if not KEY_SHAPE.match(key):
+        sys.stderr.write("--key must be 2 to 10 capitals or digits, starting with a letter\n")
+        return 2
+    cwd = argument(argv, "--cwd")
+    checkpoint = str(argument(argv, "--checkpoint", "") or "").strip()
+    slug = slugify(argument(argv, "--slug", "") or title)
+    today = datetime.date.today().isoformat()
+    name = "%s-%s" % (today, slug)
+    specs = craft_state.specs_dir(cwd)
+    directory = specs / name
+    if directory.exists():
+        sys.stderr.write(
+            "%s already exists. Use --slug to pick another name, or continue that spec.\n"
+            % directory
+        )
+        return 1
+
+    values = {
+        "title": title,
+        "key": key,
+        "route": route,
+        "date": today,
+        "checkpoint": checkpoint or "<the real test command from config/workflow.md section 6>",
+    }
+    files = ["spec.md", "tasks.md", "log.md"] + (["design.md"] if route == "project" else [])
+    try:
+        directory.mkdir(parents=True)
+        for filename in files:
+            (directory / filename).write_text(render(filename, values), encoding="utf-8")
+        (specs / "ACTIVE").write_text(name + "\n", encoding="utf-8")
+    except OSError as error:
+        sys.stderr.write("Could not create the spec: %s\n" % error)
+        return 1
+
+    previous = craft_state.active_spec_name(cwd)
+    # A new spec starts a new session. The checks of the last one prove nothing
+    # about this one, so the old session is archived, never reused.
+    session = craft_state.read_session(cwd)
+    if session and session.get("spec") != name:
+        craft_state.end_session(cwd)
+    if not craft_state.start_session(route, checkpoint=checkpoint or None, cwd=cwd, spec=name):
+        sys.stderr.write("The spec exists, but session.json could not be written.\n")
+        return 1
+
+    print("Spec created. The spec gate is now shut for source and test files.")
+    if previous and previous != name:
+        print("  replaced    %s as the active spec. It stays on disk." % previous)
+    print("  directory   %s" % directory)
+    for filename in files:
+        print("  file        %s" % filename)
+    print("  key         %s   (criteria are %s-1, %s-2, ...)" % (key, key, key))
+    print("  route       %s" % route)
+    print("  checkpoint  %s" % (checkpoint or "not set. Set it in spec.md and tasks.md"))
+    print("")
+    print("Next: fill spec.md, present it, stop for approval, then run:")
+    print("  %s" % (PLUGIN_ROOT / "bin" / "craft-approve"))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+
+def status_report(cwd):
+    """Return the status of the active spec as a dict."""
+    state, detail = craft_state.spec_state(cwd)
+    progress = craft_state.spec_progress(cwd)
+    recorded = craft_state.checks(cwd)
+    green = craft_state.green_checks(cwd)
+    report = {
+        "spec": detail.get("spec", ""),
+        "title": progress.get("title", ""),
+        "route": craft_state.current_route(cwd),
+        "risk": progress.get("risk", ""),
+        "spec_state": state,
+        "spec_sha256": (detail.get("sha256") or "")[:12],
+        "approved_sha256": (detail.get("approved_sha256") or "")[:12],
+        "approved_at": detail.get("approved_at", ""),
+        "tasks_done": progress.get("done", 0),
+        "tasks_total": progress.get("total", 0),
+        "tasks_state": progress.get("state", ""),
+        "next_task": progress.get("next_task", ""),
+        "checkpoint": craft_state.checkpoint_command(cwd),
+        "checks": len(recorded),
+        "green_checks": len(green),
+        "last_check": recorded[-1] if recorded else None,
+        "session_active": craft_state.is_active(cwd),
+    }
+    legacy = craft_state.host_root(cwd) / ".claude" / "plans" / "ACTIVE"
+    if not report["spec"] and legacy.is_file():
+        try:
+            report["legacy_plan"] = legacy.read_text(encoding="utf-8").strip()
+        except OSError:
+            report["legacy_plan"] = "unreadable"
+    return report
+
+
+def command_status(argv):
+    cwd = argument(argv, "--cwd")
+    report = status_report(cwd)
+    if "--json" in argv:
+        print(json.dumps(report, indent=2))
+        return 0
+    if not report["spec"]:
+        print("No active spec.")
+        if report.get("legacy_plan"):
+            print("A legacy plan is active: .claude/plans/%s" % report["legacy_plan"])
+        if report["session_active"]:
+            print("A craft session is active on route %s." % (report["route"] or "not recorded"))
+        print("Start one with: bin/craft-spec new --route task --title \"TITLE\"")
+        return 0
+    meaning = {
+        "approved": "approved — the gate is open",
+        "not approved": "not approved — the gate is shut",
+        "stale": "stale — spec.md changed after approval, the gate is shut",
+        "none": "missing — spec.md not found",
+    }
+    print("spec        %s" % (report["title"] or report["spec"]))
+    print("directory   .claude/specs/%s/" % report["spec"])
+    print("route       %s · risk %s" % (report["route"] or "not recorded", report["risk"] or "not set"))
+    print("state       %s" % meaning.get(report["spec_state"], report["spec_state"]))
+    if report["approved_at"]:
+        print("approved    %s at %s" % (report["approved_sha256"], report["approved_at"]))
+    if report["tasks_total"]:
+        print(
+            "tasks       %d of %d done · %s"
+            % (report["tasks_done"], report["tasks_total"], report["tasks_state"] or "state not set")
+        )
+    if report["next_task"]:
+        print("next task   %s" % report["next_task"])
+    print("checkpoint  %s" % (report["checkpoint"] or "not set"))
+    last = report["last_check"]
+    if last:
+        print(
+            "checks      %d recorded, %d green · last: exit %s · %s"
+            % (report["checks"], report["green_checks"], last.get("exit_code"), last.get("command", ""))
+        )
+    else:
+        print("checks      none recorded. Run checks through bin/craft-check")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# trace
+# ---------------------------------------------------------------------------
+
+
+def criteria_ids(spec_text):
+    """Return the criterion IDs in the "Acceptance criteria" section, in order."""
+    ids = []
+    in_section = False
+    for line in spec_text.splitlines():
+        heading = SECTION.match(line)
+        if heading:
+            in_section = heading.group(1).strip().lower().startswith("acceptance criteria")
+            continue
+        if in_section:
+            match = CRITERION_ROW.match(line)
+            if match and match.group(1) not in ids:
+                ids.append(match.group(1))
+    return ids
+
+
+def test_files(root):
+    """Yield the test files under root.
+
+    The globs and extensions come from every stack bin/craft-stack detects, plus
+    the tests globs of config/paths.json, so a Go, Java, or TypeScript test is
+    found the same way a Python one is.
+    """
+    spec = craft_stack.test_spec(str(root))
+    globs = spec["globs"]
+    extensions = tuple(spec["extensions"])
+    for directory, subdirectories, filenames in os.walk(str(root)):
+        subdirectories[:] = [
+            name for name in subdirectories if name not in SKIP_DIRECTORIES and not name.startswith(".")
+        ]
+        for filename in filenames:
+            if not filename.endswith(extensions):
+                continue
+            path = pathlib.Path(directory) / filename
+            relative = path.relative_to(root).as_posix()
+            if craft_state.path_matches(relative, globs):
+                yield path, relative
+
+
+def test_definitions(lines, suffix):
+    """Return [(line_index, name)] for the tests declared in a file's lines."""
+    patterns = TEST_DEFS.get("js" if suffix in JS_EXTENSIONS else suffix, TEST_DEFS[".py"])
+    found = []
+    parent = ""
+    for index, line in enumerate(lines):
+        for number, pattern in enumerate(patterns):
+            match = pattern.search(line)
+            if not match:
+                continue
+            name = next((group for group in reversed(match.groups()) if group), "")
+            if suffix == ".go" and number == 1 and parent:
+                name = "%s/%s" % (parent, name)
+            elif suffix == ".go" and number == 0:
+                parent = name
+            found.append((index, name))
+            break
+    return found
+
+
+def owning_test(definitions, index, line):
+    """Return the name of the test a reference on line index belongs to."""
+    current = ""
+    following = ""
+    for position, name in definitions:
+        if position == index:
+            return name
+        if position < index:
+            current = name
+        elif not following and position - index <= LOOKAHEAD_LINES:
+            following = name
+    if following and LEADING_LINE.match(line):
+        return following
+    return current
+
+
+def find_references(root, ids, key_prefixes):
+    """Return (by_id, orphans).
+
+    by_id maps each ID to a list of "file::test" strings. orphans lists
+    references to IDs with a known prefix that the spec does not define.
+    """
+    by_id = {identifier: [] for identifier in ids}
+    orphans = []
+    if not ids:
+        return by_id, orphans
+    prefixes = "|".join(re.escape(prefix) for prefix in sorted(key_prefixes))
+    pattern = re.compile(r"(?<![\w-])((?:%s)-\d+)(?!\d)" % prefixes)
+    for path, relative in test_files(root):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        definitions = test_definitions(lines, path.suffix)
+        for index, line in enumerate(lines):
+            for match in pattern.finditer(line):
+                identifier = match.group(1)
+                where = "%s::%s" % (relative, owning_test(definitions, index, line) or "<module>")
+                if identifier in by_id:
+                    if where not in by_id[identifier]:
+                        by_id[identifier].append(where)
+                else:
+                    orphan = "%s (%s)" % (where, identifier)
+                    if orphan not in orphans:
+                        orphans.append(orphan)
+    return by_id, orphans
+
+
+def session_covers(tasks_text, number, known_ids):
+    """Return the criterion IDs a "## Session N" block of tasks.md covers, or None."""
+    block = []
+    inside = False
+    for line in tasks_text.splitlines():
+        heading = SECTION.match(line)
+        if heading:
+            match = re.match(r"session\s+(\d+)\b", heading.group(1).strip(), re.IGNORECASE)
+            inside = bool(match) and match.group(1) == str(number)
+            continue
+        if inside:
+            block.append(line)
+    if not block:
+        return None
+    for line in block:
+        if "covers:" in line.lower():
+            listed = line.lower().split("covers:", 1)[1]
+            return [identifier for identifier in known_ids if re.search(
+                r"(?<![\w-])%s(?!\d)" % re.escape(identifier.lower()), listed)]
+    return None
+
+
+def command_trace(argv):
+    cwd = argument(argv, "--cwd")
+    directory = craft_state.active_spec_dir(cwd)
+    if directory is None or not (directory / "spec.md").is_file():
+        sys.stderr.write("No active spec. Nothing to trace.\n")
+        return 2
+    spec_text = (directory / "spec.md").read_text(encoding="utf-8")
+    ids = criteria_ids(spec_text)
+    if not ids:
+        sys.stderr.write(
+            "spec.md defines no criterion IDs. Rows of the Acceptance criteria table "
+            "must start with an ID such as | WDL-1 |.\n"
+        )
+        return 2
+    session = argument(argv, "--session")
+    scope = "all criteria"
+    if session:
+        try:
+            tasks_text = (directory / "tasks.md").read_text(encoding="utf-8")
+        except OSError:
+            tasks_text = ""
+        covered = session_covers(tasks_text, session.strip(), ids)
+        if not covered:
+            sys.stderr.write(
+                "tasks.md has no \"## Session %s\" block with a \"Covers:\" line that names "
+                "criteria of this spec.\n" % session
+            )
+            return 2
+        ids = covered
+        scope = "session %s" % session.strip()
+    prefixes = {identifier.rsplit("-", 1)[0] for identifier in ids}
+    root = craft_state.host_root(cwd)
+    by_id, orphans = find_references(root, ids, prefixes)
+    if session:
+        # Tests for criteria of other sessions are not orphans.
+        every_id = set(criteria_ids(spec_text))
+        orphans = [
+            orphan for orphan in orphans
+            if orphan.rsplit("(", 1)[-1].rstrip(")") not in every_id
+        ]
+    missing = [identifier for identifier in ids if not by_id[identifier]]
+    doubled = [identifier for identifier in ids if len(by_id[identifier]) > 1]
+    exit_code = 1 if missing else 0
+
+    if "--json" in argv:
+        print(
+            json.dumps(
+                {"criteria": by_id, "missing": missing, "more_than_one": doubled, "orphans": orphans},
+                indent=2,
+            )
+        )
+    else:
+        print("trace: %s — %s — %d criteria" % (directory.name, scope, len(ids)))
+        for identifier in ids:
+            tests = by_id[identifier]
+            if not tests:
+                print("  MISSING  %-10s no test names this ID" % identifier)
+            elif len(tests) > 1:
+                print("  WARN     %-10s %d tests: %s" % (identifier, len(tests), ", ".join(tests)))
+            else:
+                print("  OK       %-10s %s" % (identifier, tests[0]))
+        for orphan in orphans:
+            print("  WARN     orphan     %s — not a criterion of this spec" % orphan)
+        print(
+            "result: %s — %d of %d criteria have a test"
+            % ("PASS" if not missing else "FAIL", len(ids) - len(missing), len(ids))
+        )
+        if doubled:
+            print("note: a criterion gets exactly one test. Merge the extra tests, or split the criterion.")
+
+    try:
+        snapshot = craft_state.state_path(craft_state.TRACE_FILE, cwd)
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text(json.dumps({
+            "spec": directory.name, "scope": scope, "at": craft_state.now(), "criteria": by_id,
+            "missing": missing, "more_than_one": doubled, "orphans": orphans,
+        }, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+    if craft_state.is_active(cwd):
+        command = "craft-spec trace" + (" --session %s" % session.strip() if session else "")
+        craft_state.record_check(command, exit_code, cwd=cwd, label="trace")
+    return exit_code
+
+
+# ---------------------------------------------------------------------------
+# close
+# ---------------------------------------------------------------------------
+
+
+def command_close(argv):
+    cwd = argument(argv, "--cwd")
+    directory = craft_state.active_spec_dir(cwd)
+    archived = craft_state.end_session(cwd)
+    if directory is not None:
+        append_log(directory, "spec closed", ["Session archived: %s" % (archived or "none active")])
+    try:
+        active = craft_state.specs_dir(cwd) / "ACTIVE"
+        if active.is_file():
+            active.unlink()
+    except OSError as error:
+        sys.stderr.write("Could not clear ACTIVE: %s\n" % error)
+        return 1
+    print("Spec closed. %s" % ("Session archived at %s" % archived if archived else "No session was active."))
+    if directory is not None:
+        print("The spec stays at %s as the record of what was agreed." % directory)
+    return 0
+
+
+def main(argv):
+    commands = {
+        "new": command_new,
+        "status": command_status,
+        "trace": command_trace,
+        "close": command_close,
+    }
+    if not argv or argv[0] in ("-h", "--help") or argv[0] not in commands:
+        print(__doc__.strip())
+        return 0 if argv and argv[0] in ("-h", "--help") else 2
+    return commands[argv[0]](argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

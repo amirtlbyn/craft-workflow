@@ -1,0 +1,56 @@
+{
+  "id": "node",
+  "label": "Node",
+  "emoji": "🟩",
+  "language": "javascript",
+  "priority": 50,
+  "detect": {
+    "any_file": ["package.json"]
+  },
+  "source_extensions": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
+  "tests": {
+    "globs": ["*.test.ts", "*.spec.ts", "*.test.tsx", "*.spec.tsx", "*.test.js", "*.spec.js", "*.test.mjs", "*.spec.mjs", "__tests__/*", "*/__tests__/*", "test/*", "*/test/*", "tests/*", "*/tests/*", "e2e/*", "*/e2e/*"],
+    "extensions": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
+    "id_rule": "Put the criterion ID first in the test name: it('PAY-3: given ..., when ..., then ...', ...)."
+  },
+  "checks": {
+    "tests": [
+      { "when_script": "test", "run": "{pm} test" },
+      { "when_dependency": "vitest", "run": "npx vitest run" },
+      { "when_dependency": "jest", "run": "npx jest" },
+      { "run": "node --test" }
+    ],
+    "lint": [
+      { "when_script": "lint", "run": "{pm} run lint" },
+      { "when_dependency": "eslint", "run": "npx eslint ." },
+      { "when_dependency": "@biomejs/biome", "run": "npx biome lint ." }
+    ],
+    "format": [
+      { "when_script": "format:check", "run": "{pm} run format:check" },
+      { "when_dependency": "prettier", "run": "npx prettier --check ." },
+      { "when_dependency": "@biomejs/biome", "run": "npx biome format ." }
+    ],
+    "types": [
+      { "when_script": "typecheck", "run": "{pm} run typecheck" },
+      { "when_file": "tsconfig.json", "run": "npx tsc --noEmit" }
+    ]
+  },
+  "paths": {
+    "money": ["*/wallet*/*", "*/ledger/*", "*/payment*/*", "*/payout*/*", "*/withdraw*/*", "*/deposit*/*", "*/transfer*/*", "*/settlement*/*", "*/billing/*", "*balance*.ts", "*fee*.ts", "*commission*.ts", "*money*.ts"],
+    "auth": ["*/auth/*", "auth/*", "*/security/*", "*auth*.ts", "*auth*.js", "*.guard.ts", "*.strategy.ts", "*jwt*", "*token*.ts", "*otp*.ts", "*password*.ts", "*permission*.ts", "*session*.ts"],
+    "migrations": ["migrations/*", "*/migrations/*", "prisma/migrations/*", "*/prisma/migrations/*", "*.migration.ts", "drizzle/*", "*/drizzle/*"],
+    "models": ["prisma/schema.prisma", "*/prisma/schema.prisma", "*.prisma", "*/entities/*", "*/entity/*", "*.entity.ts", "*.model.ts", "*/models/*", "*repository*.ts", "*/repositories/*", "*/db/*", "*schema.ts"],
+    "views": ["*.controller.ts", "*/controllers/*", "*/routes/*", "routes/*", "*router*.ts", "*.resolver.ts", "*/api/*", "app/api/*", "*.dto.ts", "*/handlers/*"]
+  },
+  "toolchain": [
+    { "id": "node", "purpose": "Node.js and its package manager.", "required": true, "any_of": [{ "command": "node" }] },
+    { "id": "types", "purpose": "The TypeScript compiler, for tsc --noEmit.", "required": false, "any_of": [{ "command": "tsc", "npm": "typescript" }] }
+  ],
+  "skills": ["node-practices"],
+  "standards": ["node_standards"],
+  "concurrency": {
+    "skill": "",
+    "note": "Node is one event loop. I/O concurrency is native: bounded Promise.all, AbortSignal, timeouts. CPU-bound work blocks every request; worker_threads only where the service already runs them."
+  },
+  "lenses": "stacks/node/lenses.md"
+}

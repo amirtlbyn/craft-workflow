@@ -1,0 +1,92 @@
+{
+  "comment": "The reference stack. Its path globs are config/paths.json, its toolchain is config/toolchain.json, and its check commands are config/workflow.md section 6. Everything the workflow did before 0.7 is this pack.",
+  "id": "django",
+  "label": "Django",
+  "emoji": "🐍",
+  "language": "python",
+  "priority": 70,
+  "detect": {
+    "any_file": [
+      "manage.py"
+    ],
+    "any_contains": [
+      {
+        "files": [
+          "pyproject.toml",
+          "requirements.txt",
+          "requirements/base.txt",
+          "requirements/prod.txt",
+          "setup.cfg",
+          "Pipfile"
+        ],
+        "pattern": "(?im)(^|[\\s\"'\\[,])django([\\s\"'\\]\\[<>=~!;,^]|$)"
+      }
+    ]
+  },
+  "source_extensions": [
+    ".py"
+  ],
+  "tests": {
+    "globs": [
+      "tests/*",
+      "*/tests/*",
+      "test/*",
+      "*/test/*",
+      "test_*.py",
+      "*_test.py",
+      "tests.py",
+      "conftest.py",
+      "factories.py"
+    ],
+    "extensions": [
+      ".py"
+    ],
+    "id_rule": "Put the criterion ID first in the test method's docstring: \"\"\"WDL-2: Given ..., when ..., then ....\"\"\""
+  },
+  "checks": {
+    "source": "config/workflow.md section 6",
+    "tests": [
+      {
+        "run": "pytest -q"
+      }
+    ],
+    "lint": [
+      {
+        "run": "pylint <paths>"
+      }
+    ],
+    "imports": [
+      {
+        "run": "isort --check <paths>"
+      }
+    ],
+    "format": [
+      {
+        "when_contains": {
+          "file": "pyproject.toml",
+          "pattern": "\\[tool\\.pyink\\]"
+        },
+        "run": "pyink --check <paths>"
+      },
+      {
+        "run": "black --check <paths>"
+      }
+    ]
+  },
+  "paths": "config/paths.json",
+  "toolchain": "config/toolchain.json",
+  "skills": [
+    "python-style",
+    "django-practices"
+  ],
+  "standards": [
+    "python_code_style",
+    "django_standards",
+    "implementation"
+  ],
+  "concurrency": {
+    "skill": "",
+    "note": "Django here is WSGI and sync unless the repository proves otherwise. Concurrency for correctness (select_for_update, unique constraints, idempotency) is always required. Concurrency for throughput is Celery, bulk queries, and indexes, not async views."
+  },
+  "lenses": "stacks/django/lenses.md"
+}

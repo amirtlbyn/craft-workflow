@@ -1,0 +1,165 @@
+---
+name: fastapi-async
+description: "How to write async code in a FastAPI service that is built for it: async def endpoints, async database sessions, one HTTP client per lifespan, bounded fan-out with TaskGroup or a Semaphore, timeouts, cancellation, run_in_threadpool for blocking libraries, background work, and async tests. Load it only after the concurrency skill's report says the service is ready or limited. Never use it to turn a sync service async."
+---
+
+# fastapi-async — async FastAPI that stays fast under load
+
+`bin/craft-stack concurrency` must say `ready` or `limited` first. When it says
+`not-ready`, stop: keep the handlers `def`, and read the `concurrency` skill's
+Step 3. This skill is for a service that already runs on the event loop.
+
+Code for every rule below is in `references/patterns.md`. The test patterns
+are in `references/testing.md`. Read the section you need, not the whole file.
+
+## The one fact everything follows from
+
+FastAPI runs an `async def` endpoint **on the event loop**, and a `def`
+endpoint **in a threadpool** (anyio's, 40 threads by default). One worker
+process has one event loop. While an `async def` runs code that does not
+`await`, no other request on that worker moves.
+
+So:
+
+| Endpoint | It may call | It must not call |
+|---|---|---|
+| `async def` | `await` on async libraries: asyncpg, SQLAlchemy `AsyncSession`, `httpx.AsyncClient`, `redis.asyncio`, aiofiles | `requests`, `time.sleep`, `psycopg2`, a sync SQLAlchemy `Session`, a sync SDK, CPU-heavy loops, large `json.dumps` of big payloads |
+| `def` | anything sync. It runs in a thread | `asyncio.run`, `loop.run_until_complete`, or an async client |
+
+A blocking call inside `async def` is a **High** finding in the
+`concurrency` lens. It is worse than a plain `def` endpoint, because the plain
+one would have run in a thread.
+
+Choose per endpoint:
+
+1. Every call in the chain is async → `async def`.
+2. Any call in the chain is sync and has no async version → `def`. Or keep
+   `async def` and wrap only that call with `await run_in_threadpool(fn, ...)`
+   (or `asyncio.to_thread`). See *Blocking libraries*.
+3. CPU-bound work over a few milliseconds → not on the loop, not in the
+   request. A process pool or a task queue.
+
+## Resources: one per process, made in the lifespan
+
+Create an engine, an HTTP client, a Redis pool, and an SDK client **once**,
+in the `lifespan` handler, and close them there. Never per request: a client
+per request opens a new connection pool per request, defeats keep-alive, and
+leaks sockets under load. (`patterns.md` → *Lifespan*.)
+
+Size each pool against the resource behind it:
+
+```
+workers × (pool_size + max_overflow)  ≤  the database's connection limit − headroom
+```
+
+Write that sum in the spec when a change touches a pool.
+
+## The database
+
+- One `AsyncSession` per request, from a dependency with `async with`. An
+  `AsyncSession` is **not safe to share between concurrent tasks**. A
+  `TaskGroup` that queries in parallel opens one session per task.
+- Transactions: `async with session.begin():`. Keep them short. **Never
+  `await` an outbound HTTP call inside a transaction.** It holds a row lock and
+  a pooled connection while a partner is slow.
+- Lazy loading does not work in async SQLAlchemy. It raises `MissingGreenlet`.
+  Load relations explicitly with `selectinload` / `joinedload`, and set
+  `lazy="raise"` on relationships so a missed load fails in tests, not in
+  production.
+- Money: the lock is in the database, not in Python. `with_for_update()` on
+  the row, or an atomic `UPDATE ... SET balance = balance - :amount WHERE
+  balance >= :amount`. An `asyncio.Lock` guards one process only. It is never
+  the guard of a balance.
+- `expire_on_commit=False` on the sessionmaker, so attributes stay readable
+  after commit without a hidden reload.
+
+## Fan-out: bounded, owned, and cancellable
+
+Concurrent awaits are the reason to be async. Do them with an owner and a
+bound:
+
+| Need | Use |
+|---|---|
+| All must succeed, cancel the rest on the first failure | `asyncio.TaskGroup` (Python 3.11+) |
+| Each may fail on its own, collect results and errors | `asyncio.gather(*coros, return_exceptions=True)` over a **bounded** batch |
+| More items than you may run at once | an `asyncio.Semaphore(N)` inside each task, or a batch loop |
+| A partner's rate limit | a limiter shared in `app.state`, not one per request |
+
+`N` comes from the resource: the partner's rate limit, the pool size, the
+memory per task. Never from the input size. `gather` over a list a user sent
+is an unbounded fan-out and a **High** finding. (`patterns.md` → *Bounded
+fan-out*.)
+
+## Timeouts and cancellation
+
+- Every outbound call has a timeout: `httpx.Timeout(connect=..., read=...)` on
+  the client, and `async with asyncio.timeout(seconds):` around a group of
+  awaits that must finish together.
+- Cancellation is an exception: `asyncio.CancelledError`. It arrives when the
+  client disconnects, a timeout fires, or a TaskGroup sibling fails. **Never
+  swallow it.** `except Exception` does not catch it, which is correct. A bare
+  `except:` or `except BaseException:` does: re-raise it. Clean up in
+  `finally` or with `async with`.
+- Shield only what must finish once started, such as writing an audit row,
+  with `asyncio.shield`, and keep that part short.
+
+## Blocking libraries
+
+When a dependency has no async version and the endpoint must stay
+`async def`, push the call into a thread:
+
+```python
+result = await run_in_threadpool(sync_client.fetch, order_id)   # from fastapi.concurrency
+```
+
+The threadpool is shared with every `def` endpoint and has a limit. A slow
+sync call wrapped this way still costs a thread per call: bound it with a
+Semaphore when it can fan out.
+
+## Background work
+
+| Work | Use |
+|---|---|
+| Small, may be lost on restart, after the response: send one email | `BackgroundTasks` |
+| Must survive a restart, retried, or slow | a task queue (Celery, arq, Taskiq, Dramatiq), idempotent |
+| A loop for the life of the process | a task started in `lifespan`, cancelled and awaited on shutdown |
+
+`asyncio.create_task(...)` without a stored reference can be garbage collected
+mid-flight, and its exception is never seen. Keep a reference in a set owned by
+`app.state`, discard it in a done callback, and cancel the set on shutdown.
+Fire-and-forget is a **Medium** finding, **High** when it moves money.
+
+## Errors
+
+- Map domain errors to HTTP in one exception handler, not in each endpoint.
+- Retry only idempotent calls, with backoff and jitter, and a total time
+  budget. A retry inside a TaskGroup multiplies load on a failing partner.
+
+## Gate A additions
+
+- The tests run on the event loop: `pytest.mark.anyio` (or pytest-asyncio),
+  with `httpx.AsyncClient(transport=ASGITransport(app=app))`.
+- One test per bound: it proves no more than `N` calls are in flight
+  (`testing.md` → *Prove the bound*).
+- One test per timeout: a fake dependency that never answers, and the
+  endpoint answers within the budget.
+- Run the suite once with `PYTHONASYNCIODEBUG=1`. asyncio logs every callback
+  that blocks the loop for longer than 100 ms. Treat a log line as a failure.
+
+## Review — what the `concurrency` lens checks here
+
+1. No blocking call inside `async def`, in the endpoint or anything it awaits.
+2. Every client, engine, and pool is created in `lifespan` and closed there.
+3. No `AsyncSession` shared between concurrent tasks.
+4. Every fan-out is bounded by a number from a resource.
+5. Every outbound call has a timeout. No `CancelledError` is swallowed.
+6. No `create_task` without an owner. No `BackgroundTasks` for work that must
+   not be lost.
+7. No outbound call inside a transaction. Money is guarded by the database.
+
+## Related
+
+- `concurrency` — the gate this skill sits behind.
+- `fastapi-practices` — layering, dependencies, settings, errors.
+- `references/patterns.md`, `references/testing.md` — the code.
+- `bin/craft-std fastapi_standards --list` — the standard, by section.

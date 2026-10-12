@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""craft-session - create, inspect, feed and close the craft session state.
+
+The three craft hooks read <repo>/.claude/craft/session.json. With no such file
+they are inert, and the workflow behaves exactly as it did before. This command
+is what creates that file, and what records the evidence Gate A needs.
+
+Usage:
+    bin/craft-session start --route task [--session ID] [--checkpoint "CMD"]
+    bin/craft-session record-check --command "CMD" --exit-code N
+    bin/craft-session status [--json]
+    bin/craft-session record-finding --severity High --lens logic --where FILE:LINE --title "TEXT"
+                                     [--state proposed|confirmed] [--confidence 0.8]
+    bin/craft-session finding ID --state confirmed|rejected|fixed [--note "TEXT"]
+    bin/craft-session record-review --lenses spec,style,logic --decision APPROVE|REQUEST_CHANGES|COMMENT
+                                    [--reviewers reviewer,deep-reviewer] [--round N]
+    bin/craft-session end
+
+Commands:
+    start          Create or update the session. --route is quick, task or
+                   project. --checkpoint names the command that proves Gate A;
+                   with one set, only that command counts as evidence.
+    record-check   Append a command and its exit code, by hand. Prefer
+                   bin/craft-check, which runs the command and records the exit
+                   code it really returned. Use this only for a check that ran
+                   somewhere craft-check cannot reach, and record what really ran.
+                   This is the evidence verify_gates looks for before it lets a
+                   claim of `done` through.
+    status         Print the route, the session id, the spec state and the checks.
+    record-finding Record one adjudicated review finding in .claude/craft/findings.json.
+                   It gets an id (F1, F2, ...). The status band and the board's
+                   Review tab read it. The developer confirms or rejects it there.
+    finding        Change one finding's state: confirmed, rejected, fixed.
+    record-review  Record one review round: the lenses that ran and the decision.
+                   Gate B reads the last round and the open Critical and High findings.
+    end            Move session.json into .claude/craft/archive/. The hooks go
+                   inert again. Nothing is deleted.
+
+Options:
+    --cwd PATH     Work against another repository.
+
+Exit codes:
+    0   the command did what it says
+    1   the state file could not be written
+    2   the arguments are wrong
+"""
+
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+
+import craft_state  # noqa: E402
+
+ROUTES = ("quick", "task", "project")
+
+
+def argument(argv, flag, default=None):
+    """Return the value after flag in argv, or default."""
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def command_start(argv):
+    route = str(argument(argv, "--route", "") or "").strip().lower()
+    if route not in ROUTES:
+        sys.stderr.write("start needs --route %s\n" % "|".join(ROUTES))
+        return 2
+    cwd = argument(argv, "--cwd")
+    ok = craft_state.start_session(
+        route,
+        session_id=argument(argv, "--session"),
+        checkpoint=argument(argv, "--checkpoint"),
+        cwd=cwd,
+    )
+    if not ok:
+        sys.stderr.write(
+            "Could not write %s\n" % craft_state.state_path("session.json", cwd)
+        )
+        return 1
+    print("Craft session started.")
+    print("  file        %s" % craft_state.state_path("session.json", cwd))
+    print("  route       %s" % route)
+    print("  session id  %s" % (craft_state.current_session_id(cwd) or "not set yet"))
+    print("  checkpoint  %s" % (craft_state.checkpoint_command(cwd) or "not set"))
+    if route in ("task", "project"):
+        print("")
+        print("The spec gate is now shut for source and test files. To open it:")
+        print("  1. bin/craft-spec new --route %s --title \"TITLE\", or run /spec." % route)
+        print("  2. Present the spec and get the developer's approval.")
+        print("  3. bin/craft-approve")
+    return 0
+
+
+def command_record_check(argv):
+    command = argument(argv, "--command")
+    exit_code = argument(argv, "--exit-code")
+    if command is None or exit_code is None:
+        sys.stderr.write('record-check needs --command "CMD" and --exit-code N\n')
+        return 2
+    try:
+        code = int(exit_code)
+    except ValueError:
+        sys.stderr.write("--exit-code must be a whole number\n")
+        return 2
+    cwd = argument(argv, "--cwd")
+    if not craft_state.record_check(command, code, cwd=cwd):
+        sys.stderr.write(
+            "Could not write %s\n" % craft_state.state_path("session.json", cwd)
+        )
+        return 1
+    print("Recorded: exit %d for %s" % (code, command))
+    if code != 0:
+        print("This command failed, so it is not evidence for Gate A.")
+    return 0
+
+
+def command_status(argv):
+    cwd = argument(argv, "--cwd")
+    session = craft_state.read_session(cwd)
+    checks = craft_state.checks(cwd)
+    green = craft_state.green_checks(cwd)
+    session_id = craft_state.current_session_id(cwd)
+
+    if "--json" in argv:
+        import json
+
+        print(
+            json.dumps(
+                {
+                    "host_root": str(craft_state.host_root(cwd)),
+                    "active": craft_state.is_active(cwd),
+                    "route": craft_state.current_route(cwd),
+                    "session_id": session_id,
+                    "checkpoint_command": craft_state.checkpoint_command(cwd),
+                    "checks": checks,
+                    "green_checks": len(green),
+                    "spec": craft_state.active_spec_name(cwd),
+                    "spec_state": craft_state.spec_state(cwd)[0],
+                    "open_findings": len(craft_state.open_findings(cwd)),
+                    "started_at": session.get("started_at", ""),
+                    "updated_at": session.get("updated_at", ""),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    print("host repository  %s" % craft_state.host_root(cwd))
+    print("state file       %s" % craft_state.state_path("session.json", cwd))
+    print("active           %s" % craft_state.is_active(cwd))
+    if not craft_state.is_active(cwd):
+        print("")
+        print("No craft session here, so every hook except protect_human_owned is")
+        print("inert. Start one with:  bin/craft-session start --route task")
+        return 0
+    print("route            %s" % (craft_state.current_route(cwd) or "not recorded"))
+    print("session id       %s" % (session_id or "not recorded"))
+    print("checkpoint       %s" % (craft_state.checkpoint_command(cwd) or "not set"))
+    print("started at       %s" % session.get("started_at", ""))
+    print("updated at       %s" % session.get("updated_at", ""))
+    print("spec             %s (%s)" % (craft_state.active_spec_name(cwd) or "none", craft_state.spec_state(cwd)[0]))
+    print("open findings    %d" % len(craft_state.open_findings(cwd)))
+    print("checks           %d recorded, %d exited 0" % (len(checks), len(green)))
+    for check in checks[-10:]:
+        print(
+            "  exit %-4s %s  %s"
+            % (check.get("exit_code"), check.get("at", ""), check.get("command", ""))
+        )
+    if not green:
+        print("")
+        print("No command has passed yet, so Gate A has no evidence. A claim of")
+        print("`done` will be refused at the Stop hook.")
+    return 0
+
+
+def command_end(argv):
+    cwd = argument(argv, "--cwd")
+    archived = craft_state.end_session(cwd)
+    if not archived:
+        sys.stderr.write("No active session to end.\n")
+        return 1
+    print("Session archived at %s" % archived)
+    print("The craft hooks are inert again in this repository.")
+    return 0
+
+
+SEVERITIES = ("Critical", "High", "Medium", "Low")
+FINDING_STATES = ("proposed", "confirmed", "plausible", "rejected", "fixed")
+DECISIONS = ("APPROVE", "REQUEST_CHANGES", "COMMENT")
+
+
+def command_record_finding(argv):
+    cwd = argument(argv, "--cwd")
+    severity = str(argument(argv, "--severity", "") or "").capitalize()
+    title = str(argument(argv, "--title", "") or "").strip()
+    if severity not in SEVERITIES or not title:
+        sys.stderr.write("record-finding needs --severity %s and --title\n" % "|".join(SEVERITIES))
+        return 2
+    state = str(argument(argv, "--state", "proposed") or "proposed").lower()
+    if state not in FINDING_STATES:
+        sys.stderr.write("--state must be one of %s\n" % ", ".join(FINDING_STATES))
+        return 2
+    existing = craft_state.read_findings(cwd)
+    finding_id = "F%d" % (len(existing) + 1)
+    record = {
+        "id": finding_id,
+        "severity": severity,
+        "lens": str(argument(argv, "--lens", "") or ""),
+        "where": str(argument(argv, "--where", "") or ""),
+        "title": title,
+        "state": state,
+        "spec": craft_state.active_spec_name(cwd),
+    }
+    confidence = argument(argv, "--confidence")
+    if confidence:
+        try:
+            record["confidence"] = float(confidence)
+        except ValueError:
+            pass
+    if not craft_state.add_finding(record, cwd=cwd):
+        sys.stderr.write("Could not write findings.json\n")
+        return 1
+    print("Recorded %s: [%s] %s %s — %s (%s)" % (finding_id, severity, record["lens"], record["where"], title, state))
+    return 0
+
+
+def command_finding(argv):
+    cwd = argument(argv, "--cwd")
+    if not argv or argv[0].startswith("--"):
+        sys.stderr.write("finding needs an id, such as F2\n")
+        return 2
+    state = str(argument(argv, "--state", "") or "").lower()
+    if state not in FINDING_STATES:
+        sys.stderr.write("--state must be one of %s\n" % ", ".join(FINDING_STATES))
+        return 2
+    changes = {"state": state}
+    note = argument(argv, "--note")
+    if note:
+        changes["note"] = note
+    if not craft_state.update_finding(argv[0], changes, cwd=cwd):
+        sys.stderr.write("No finding %s\n" % argv[0])
+        return 1
+    print("%s is now %s" % (argv[0], state))
+    return 0
+
+
+def command_record_review(argv):
+    cwd = argument(argv, "--cwd")
+    lenses = [lens.strip() for lens in str(argument(argv, "--lenses", "") or "").split(",") if lens.strip()]
+    decision = str(argument(argv, "--decision", "") or "").upper()
+    if not lenses or decision not in DECISIONS:
+        sys.stderr.write("record-review needs --lenses a,b and --decision %s\n" % "|".join(DECISIONS))
+        return 2
+    record = {
+        "lenses": lenses,
+        "decision": decision,
+        "reviewers": [name.strip() for name in str(argument(argv, "--reviewers", "") or "").split(",") if name.strip()],
+        "round": argument(argv, "--round"),
+    }
+    if not craft_state.add_review(record, cwd=cwd):
+        sys.stderr.write("Could not write reviews.json\n")
+        return 1
+    print("Recorded a review round: %s · %s" % (", ".join(lenses), decision))
+    return 0
+
+
+COMMANDS = {
+    "record-finding": command_record_finding,
+    "finding": command_finding,
+    "record-review": command_record_review,
+    "start": command_start,
+    "record-check": command_record_check,
+    "status": command_status,
+    "end": command_end,
+}
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print((__doc__ or "").strip())
+        return 0
+    if argv[0] not in COMMANDS:
+        sys.stderr.write("unknown command: %s\n" % argv[0])
+        sys.stderr.write("commands: %s\n" % ", ".join(sorted(COMMANDS)))
+        return 2
+    return COMMANDS[argv[0]](argv[1:])
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        sys.exit(130)

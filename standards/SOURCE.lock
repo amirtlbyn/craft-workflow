@@ -1,0 +1,50 @@
+{
+  "comment": "Provenance of the standards in this directory. bin/craft-doctor compares each sha256 here against the file on disk and reports a mismatch as a FAIL. The four Python and Django standards are written for this public repository, so synced_from is null. After scripts/sync-standards.sh copies your own, fill in synced_from and regenerate the hashes.",
+  "lock_version": 1,
+  "documents": [
+    {
+      "filename": "python_code_style.ai.md",
+      "sha256": "80dc44737f28ac837208bb3083e5aca69d2b02587f6611da251e8eaf0c539862",
+      "bytes": 24117,
+      "owner": "ai",
+      "synced_from": {
+        "repo": null,
+        "commit": null,
+        "date": null
+      }
+    },
+    {
+      "filename": "django_standards.ai.md",
+      "sha256": "7c2dd1c2b1f5864f0c2270fb99cb13546281040809cf89b225cc188d0948ddfe",
+      "bytes": 9858,
+      "owner": "ai",
+      "synced_from": {
+        "repo": null,
+        "commit": null,
+        "date": null
+      }
+    },
+    {
+      "filename": "implementation_standards.ai.md",
+      "sha256": "ad2deac99f2753b9575f6479d78a24032b1f1a22c41c30c8b1923606f3061249",
+      "bytes": 16791,
+      "owner": "ai",
+      "synced_from": {
+        "repo": null,
+        "commit": null,
+        "date": null
+      }
+    },
+    {
+      "filename": "technical_standards.ai.md",
+      "sha256": "c51d8c1340240b8e776f4d8c7f58741029f7a50fe618a0c2cdc8c0d7d24ec556",
+      "bytes": 16680,
+      "owner": "ai",
+      "synced_from": {
+        "repo": null,
+        "commit": null,
+        "date": null
+      }
+    }
+  ]
+}

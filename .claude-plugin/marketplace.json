@@ -1,0 +1,20 @@
+{
+  "name": "craft",
+  "owner": {
+    "name": "Amirhossein Talebian"
+  },
+  "metadata": {
+    "description": "The spec-driven Craft engineering workflow for Claude Code and ZCode, for any backend stack.",
+    "version": "0.7.0"
+  },
+  "plugins": [
+    {
+      "name": "craft-workflow",
+      "source": "./",
+      "description": "Spec-driven, cost-routed engineering workflow for any backend stack (Django, FastAPI, Go, Java, Node): three routes by size, a hook-enforced spec gate approved once and bound by hash, gates derived from the spec, a concurrency readiness gate, pluggable AI deciders (Jev, free tiers, local models, Claude Haiku), and a Claude Code mod with the status at the top, a craft board, and cost per agent.",
+      "version": "0.7.0",
+      "displayName": "Craft Workflow",
+      "category": "workflow"
+    }
+  ]
+}

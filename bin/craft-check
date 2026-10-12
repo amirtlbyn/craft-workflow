@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""craft-check - run a check, record its real exit code, and print only what matters.
+
+Two problems, one command.
+
+1. Gate A needs evidence: a command that ran and passed. Before this command,
+   the evidence came from `bin/craft-session record-check`, which records
+   whatever exit code it is told. craft-check runs the command itself and
+   records the exit code the command really returned.
+2. Test output is the most expensive thing an agent reads. `pytest -v` on one
+   app prints thousands of lines, and every line goes into the context. This
+   command keeps the full output in a log file and prints a short summary on
+   success, and the failures on failure.
+
+Usage:
+    bin/craft-check [options] -- <command> [args...]
+    bin/craft-check [options] -- "<command line>"
+
+Options:
+    --label NAME   A short name for the check: tests, lint, imports, format.
+                   The default is guessed from the command.
+    --tail N       Lines to print on success. The default is 12.
+    --fail-lines N Lines to print on failure. The default is 120.
+    --full         Print the whole output. Use it only when the summary is not enough.
+    --no-record    Run and print, but record nothing in session.json.
+    --junit PATH   Read a JUnit XML report the command wrote, and print its
+                   counts and the failing tests. "auto" looks in the usual
+                   places (target/surefire-reports, build/test-results,
+                   .claude/craft/junit.xml, junit.xml) for a report written
+                   during this run. Every stack's runner can write one.
+    --cwd PATH     Run in PATH, and record against the repository that holds it.
+
+Whatever the stack, the output's own summary line is read too: pytest, go test,
+gotestsum, Maven, Jest, Vitest, node --test, mocha, ruff, ESLint, golangci-lint,
+tsc, and the race detector. The counts go into the check's record as
+"summary", so the status band can say "42 passed" without rereading a log.
+
+The check is recorded in <repo>/.claude/craft/session.json only when a craft
+session is active there. The full output always goes to
+<repo>/.claude/craft/logs/<time>-<label>.log.
+
+Exit code: the exit code of the command. 2 when the arguments are wrong.
+"""
+
+import os
+import pathlib
+import re
+import shlex
+import subprocess
+import sys
+import time
+import xml.etree.ElementTree as ElementTree
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+
+import craft_state  # noqa: E402
+
+DEFAULT_TAIL = 12
+DEFAULT_FAIL_LINES = 120
+FAILURE_MARKER = re.compile(
+    r"^(FAILED|ERROR|E\s|Traceback|.*\b(Error|Exception):|\*{3,}|[^:\s]+\.py:\d+:\d*:?\s*[A-Z]\d{3,4}"
+    r"|\s*--- FAIL:|FAIL\s|panic:|WARNING: DATA RACE|\[ERROR\]|\s*(✗|×|✕|●)\s|.*error TS\d+"
+    r"|.*:\d+:\d+\s+error\s|\s*FAIL\s)"
+)
+# First match wins, so the specific patterns come first.
+LABEL_GUESSES = (
+    (r"go\s+test\b.*-race", "race"),
+    (r"checkstyle|spotbugs|\bpmd\b", "lint"),
+    (r"spotless", "format"),
+    (r"\bgo\s+vet\b", "vet"),
+    (r"\b(pytest|manage\.py test|unittest|go\s+test|gotestsum|vitest|jest|mocha|node --test)\b", "tests"),
+    (r"\b(mvnw?|gradlew?)\b.*\btest\b", "tests"),
+    (r"\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b", "tests"),
+    (r"\b(pylint|flake8|golangci-lint|eslint)\b|ruff\s+check|biome\s+lint|\brun\s+lint\b", "lint"),
+    (r"\bisort\b", "imports"),
+    (r"\b(black|pyink|gofmt|prettier)\b|ruff\s+format|biome\s+format|format:check", "format"),
+    (r"\b(mypy|pyright|basedpyright|tsc)\b|typecheck", "types"),
+    (r"\b(mvnw?|gradlew?)\b.*\b(verify|build)\b", "build"),
+)
+JUNIT_PLACES = (
+    ".claude/craft/junit.xml",
+    "junit.xml",
+    "report.xml",
+    "test-results/*.xml",
+    "test-results/*/*.xml",
+    "reports/*.xml",
+    "target/surefire-reports/*.xml",
+    "target/failsafe-reports/*.xml",
+    "build/test-results/*/*.xml",
+    "*/target/surefire-reports/*.xml",
+    "*/build/test-results/*/*.xml",
+)
+
+
+def parse_arguments(argv):
+    """Return (options, command) or raise ValueError with a message."""
+    if "--" not in argv:
+        raise ValueError("put the command after --, for example: craft-check -- pytest -q")
+    split = argv.index("--")
+    flags, command = argv[:split], argv[split + 1 :]
+    if not command:
+        raise ValueError("no command after --")
+    options = {
+        "label": None,
+        "tail": DEFAULT_TAIL,
+        "fail_lines": DEFAULT_FAIL_LINES,
+        "full": False,
+        "record": True,
+        "cwd": None,
+        "junit": None,
+    }
+    index = 0
+    while index < len(flags):
+        flag = flags[index]
+        if flag == "--full":
+            options["full"] = True
+        elif flag == "--no-record":
+            options["record"] = False
+        elif flag in ("--label", "--tail", "--fail-lines", "--cwd", "--junit"):
+            if index + 1 >= len(flags):
+                raise ValueError("%s needs a value" % flag)
+            value = flags[index + 1]
+            index += 1
+            if flag == "--label":
+                options["label"] = value
+            elif flag == "--junit":
+                options["junit"] = value
+            elif flag == "--cwd":
+                options["cwd"] = value
+            else:
+                try:
+                    options[flag[2:].replace("-", "_")] = max(0, int(value))
+                except ValueError:
+                    raise ValueError("%s must be a whole number" % flag)
+        else:
+            raise ValueError("unknown option %s" % flag)
+        index += 1
+    return options, command
+
+
+def command_line(command):
+    """Return the command as one shell string. One argument is used as it is."""
+    if len(command) == 1:
+        return command[0]
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def guess_label(line):
+    """Return a short label for a command line."""
+    lowered = line.lower()
+    for pattern, label in LABEL_GUESSES:
+        if re.search(pattern, lowered):
+            return label
+    return "check"
+
+
+def _last_int(pattern, text):
+    matches = re.findall(pattern, text)
+    if not matches:
+        return None
+    value = matches[-1]
+    if isinstance(value, tuple):
+        value = next((part for part in value if part), "0")
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def summarize(output):
+    """Return the counts a runner's own summary line states. {} when none is found.
+
+    Keys: passed, failed, errors, skipped, total, issues, races, and source,
+    the runner the counts came from.
+    """
+    text = output[-20000:]
+    summary = {}
+
+    def put(source, **counts):
+        for key, value in counts.items():
+            if value is not None:
+                summary[key] = value
+        if counts and any(value is not None for value in counts.values()):
+            summary.setdefault("source", source)
+
+    gotestsum = re.findall(r"DONE\s+(\d+)\s+tests?(?:,\s+(\d+)\s+skipped)?(?:,\s+(\d+)\s+failures?)?", text)
+    jest = re.search(r"^Tests:\s+(.+)$", text, re.M)
+    vitest = re.search(r"^\s*Tests\s+(.+?)\((\d+)\)\s*$", text, re.M)
+    maven = re.findall(r"Tests run:\s*(\d+),\s*Failures:\s*(\d+),\s*Errors:\s*(\d+),\s*Skipped:\s*(\d+)", text)
+    if gotestsum:
+        total, skipped, failed = gotestsum[-1]
+        put("gotestsum", total=int(total), skipped=int(skipped or 0), failed=int(failed or 0),
+            passed=int(total) - int(skipped or 0) - int(failed or 0))
+    elif maven:
+        total, failed, errors, skipped = (int(part) for part in maven[-1])
+        put("maven", total=total, failed=failed, errors=errors, skipped=skipped,
+            passed=total - failed - errors - skipped)
+    elif jest:
+        line = jest.group(1)
+        put("jest", failed=_last_int(r"(\d+)\s+failed", line), passed=_last_int(r"(\d+)\s+passed", line),
+            skipped=_last_int(r"(\d+)\s+skipped", line), total=_last_int(r"(\d+)\s+total", line))
+    elif vitest:
+        line = vitest.group(1)
+        put("vitest", failed=_last_int(r"(\d+)\s+failed", line), passed=_last_int(r"(\d+)\s+passed", line),
+            skipped=_last_int(r"(\d+)\s+skipped", line), total=int(vitest.group(2)))
+    elif re.search(r"^# (pass|fail) \d+", text, re.M):
+        put("node --test", passed=_last_int(r"(?m)^# pass (\d+)", text),
+            failed=_last_int(r"(?m)^# fail (\d+)", text), skipped=_last_int(r"(?m)^# skipped (\d+)", text))
+    elif re.search(r"\d+\s+passing", text):
+        put("mocha", passed=_last_int(r"(\d+)\s+passing", text), failed=_last_int(r"(\d+)\s+failing", text) or 0,
+            skipped=_last_int(r"(\d+)\s+pending", text))
+    elif re.search(r"=+ .*\b(passed|failed|error)", text):
+        tail = re.findall(r"=+ (.*?(?:passed|failed|errors?|skipped|no tests ran).*?) =+", text)
+        line = tail[-1] if tail else ""
+        put("pytest", passed=_last_int(r"(\d+)\s+passed", line), failed=_last_int(r"(\d+)\s+failed", line),
+            errors=_last_int(r"(\d+)\s+errors?", line), skipped=_last_int(r"(\d+)\s+skipped", line))
+    elif re.search(r"(?m)^(ok|FAIL|---)\s", text):
+        failed_tests = len(re.findall(r"(?m)^\s*--- FAIL:", text))
+        passed_tests = len(re.findall(r"(?m)^\s*--- PASS:", text))
+        packages_ok = len(re.findall(r"(?m)^ok\s+\S+", text))
+        packages_failed = len(re.findall(r"(?m)^FAIL\s+\S+", text))
+        put("go test", failed=failed_tests, packages_ok=packages_ok, packages_failed=packages_failed,
+            passed=passed_tests or None)
+
+    races = len(re.findall(r"WARNING: DATA RACE", text))
+    if races:
+        summary["races"] = races
+        summary.setdefault("source", "race detector")
+    issues = (_last_int(r"Found (\d+) errors?", text)
+              or _last_int(r"(\d+) problems? \(", text)
+              or _last_int(r"(?m)^(\d+) issues?", text))
+    if issues is None:
+        typescript = len(re.findall(r"error TS\d+", text))
+        issues = typescript or None
+    if issues:
+        summary["issues"] = issues
+        summary.setdefault("source", "linter")
+    return summary
+
+
+def find_junit(root, run_directory, started):
+    """Return the JUnit XML files written since started, newest first."""
+    found = []
+    for base in {pathlib.Path(run_directory), root}:
+        for pattern in JUNIT_PLACES:
+            for path in base.glob(pattern):
+                try:
+                    if path.is_file() and path.stat().st_mtime >= started - 1 and path not in found:
+                        found.append(path)
+                except OSError:
+                    continue
+    return sorted(found, key=lambda path: -path.stat().st_mtime)[:200]
+
+
+def read_junit(paths):
+    """Return (summary, failing) from JUnit XML files. ({}, []) when none parse."""
+    totals = {"total": 0, "failed": 0, "errors": 0, "skipped": 0}
+    failing = []
+    parsed = False
+    for path in paths:
+        try:
+            tree = ElementTree.parse(str(path))
+        except (ElementTree.ParseError, OSError):
+            continue
+        parsed = True
+        for case in tree.getroot().iter("testcase"):
+            totals["total"] += 1
+            outcome = None
+            for child in case:
+                if child.tag in ("failure", "error"):
+                    outcome = child
+                    totals["failed" if child.tag == "failure" else "errors"] += 1
+                    break
+                if child.tag == "skipped":
+                    totals["skipped"] += 1
+                    break
+            if outcome is not None and len(failing) < 20:
+                message = (outcome.get("message") or (outcome.text or "")).strip().splitlines()
+                name = ".".join(part for part in (case.get("classname"), case.get("name")) if part)
+                failing.append("%s — %s" % (name, message[0][:160] if message else outcome.tag))
+    if not parsed:
+        return {}, []
+    totals["passed"] = totals["total"] - totals["failed"] - totals["errors"] - totals["skipped"]
+    totals["source"] = "junit"
+    return totals, failing
+
+
+def summary_line(summary):
+    """Return one human line for a summary dict, or ''."""
+    if not summary:
+        return ""
+    order = ("passed", "failed", "errors", "skipped", "total", "packages_ok", "packages_failed", "issues", "races")
+    parts = []
+    for key in order:
+        value = summary.get(key)
+        if value is None or (value == 0 and key not in ("passed", "failed")):
+            continue
+        parts.append("%s %s" % (value, key.replace("_", " ")))
+    return "%s (%s)" % (" · ".join(parts), summary.get("source", "")) if parts else ""
+
+
+def failure_excerpt(lines, limit):
+    """Return the lines worth reading after a failure, at most limit of them.
+
+    Test runners and linters put the verdict at the end, so the tail is always
+    kept. Marker lines from earlier in the output, such as FAILED, ERROR,
+    Traceback, and linter codes, are added in front of the tail, in order.
+    """
+    if limit <= 0 or len(lines) <= limit:
+        return lines, 0
+    tail_size = max(limit * 2 // 3, 1)
+    tail_start = len(lines) - tail_size
+    budget = limit - tail_size
+    markers = []
+    for number, line in enumerate(lines[:tail_start]):
+        if budget <= 0:
+            break
+        if FAILURE_MARKER.match(line):
+            markers.append(line)
+            budget -= 1
+    omitted = len(lines) - tail_size - len(markers)
+    excerpt = markers
+    if markers:
+        excerpt = markers + ["   ... (%d lines omitted) ..." % omitted]
+    return excerpt + lines[tail_start:], omitted
+
+
+def log_path_for(root, label):
+    """Return a new log file path under <repo>/.claude/craft/logs/."""
+    stamp = craft_state.now().replace(":", "").replace("-", "").replace("+0000", "Z")
+    safe_label = re.sub(r"[^a-z0-9_-]+", "-", label.lower()).strip("-") or "check"
+    directory = root / ".claude" / "craft" / "logs"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / ("%s-%s.log" % (stamp or "run", safe_label))
+    counter = 1
+    while path.exists():
+        counter += 1
+        path = directory / ("%s-%s-%d.log" % (stamp or "run", safe_label, counter))
+    return path
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if argv else 2
+    try:
+        options, command = parse_arguments(argv)
+    except ValueError as error:
+        sys.stderr.write("craft-check: %s\n" % error)
+        return 2
+
+    line = command_line(command)
+    label = options["label"] or guess_label(line)
+    run_directory = options["cwd"] or os.getcwd()
+    root = craft_state.host_root(run_directory)
+
+    started = time.time()
+    try:
+        completed = subprocess.run(
+            line,
+            shell=True,
+            cwd=run_directory,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        exit_code = completed.returncode
+        output = completed.stdout.decode("utf-8", errors="replace")
+    except OSError as error:
+        exit_code = 127
+        output = "craft-check could not start the command: %s\n" % error
+
+    log_path = None
+    try:
+        log_path = log_path_for(root, label)
+        log_path.write_text("$ %s\n\n%s" % (line, output), encoding="utf-8")
+    except OSError:
+        log_path = None
+
+    summary = summarize(output)
+    failing = []
+    if options["junit"]:
+        if options["junit"] == "auto":
+            reports = find_junit(root, run_directory, started)
+        else:
+            candidate = pathlib.Path(options["junit"])
+            if not candidate.is_absolute():
+                candidate = pathlib.Path(run_directory) / candidate
+            reports = [candidate] if candidate.is_file() else []
+        junit_summary, failing = read_junit(reports)
+        if junit_summary:
+            summary = dict(summary, **junit_summary)
+
+    recorded = False
+    if options["record"] and craft_state.is_active(str(root)):
+        recorded = craft_state.record_check(
+            line,
+            exit_code,
+            cwd=str(root),
+            label=label,
+            log=str(log_path.relative_to(root)) if log_path else None,
+            summary=summary,
+        )
+
+    lines = output.rstrip("\n").splitlines()
+    if options["full"]:
+        shown = lines
+    elif exit_code == 0:
+        shown = lines[-options["tail"] :] if options["tail"] else []
+    else:
+        shown, _omitted = failure_excerpt(lines, options["fail_lines"])
+
+    verdict = "PASS" if exit_code == 0 else "FAIL"
+    print(
+        "craft-check %s · %s · exit %d · %d lines of output%s"
+        % (
+            verdict,
+            label,
+            exit_code,
+            len(lines),
+            " · recorded for Gate A" if recorded else "",
+        )
+    )
+    print("  $ %s" % line)
+    if log_path is not None:
+        print("  full log: %s" % log_path.relative_to(root))
+    described = summary_line(summary)
+    if described:
+        print("  summary:  %s" % described)
+    for name in failing:
+        print("  failing:  %s" % name)
+    if shown:
+        print("")
+        print("\n".join(shown))
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

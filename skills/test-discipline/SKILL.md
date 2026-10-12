@@ -1,0 +1,252 @@
+---
+name: test-discipline
+description: "Decide which tests to write, and which to delete. Load before you add tests, and again after you write them, for the test audit. Use it to stop coverage-driven, framework-testing, and speculative tests, and to concentrate test effort on money, authorization, concurrency, state machines, and contracts."
+---
+
+# test-discipline
+
+Load this skill with `python-style`, and with `django-practices` for Django work. It decides
+**which** tests to write. The repository's test standards decide **how** to write
+them. That is the "Tests" section of `standards/implementation_standards.ai.md`
+(`bin/craft-std implementation Tests`): unittest, Django `TestCase`,
+given/when/then, DAMP not DRY, construction helpers allowed and validation
+helpers forbidden. Repository standards win over this
+skill when they are more specific.
+
+## The rule
+
+Tests protect application behavior, contracts, invariants, and important failure
+modes. Tests do not prove that Python, Django, the ORM, or a standard third-party
+library works.
+
+**Test count is not a quality metric.**
+**Prefer a small number of high-value tests over a large number of low-value tests.**
+**Branch coverage is not the same thing as meaningful test coverage.**
+
+This skill shares a principle with `validation-discipline`:
+**do not maximize code. Maximize confidence per line of code.**
+
+---
+
+## Step 0 — The acceptance criteria are the scenarios
+
+On the `task` and `project` routes, the tests to write are the acceptance
+criteria of the approved spec. There is no second list and no second approval.
+The `spec` skill proposes the criteria, with this skill's classes, and the
+developer approves them once.
+
+- Write **exactly one test per criterion**. Put the ID first in the test's
+  docstring: `"""WDL-2: Given ..., when ..., then ...."""`. `bin/craft-spec
+  trace` checks the mapping, and Gate A needs it green.
+- A criterion marked `[developer]` is REQUIRED. Write it. Do not argue it down.
+- Write no test that serves no criterion. When the implementation reveals a
+  behavior that deserves a test, propose a spec delta. Do not add it silently.
+- Use Step 1 to Step 3 below while the spec is written, to choose the criteria
+  and the "Not tested, and why" list. Use Step 4 after the tests exist.
+
+The spec gate hook holds every source and test file shut until the spec is
+approved. The `quick` route writes no tests. `/debug` writes one regression
+test that fails before the fix, with no spec.
+
+---
+
+## Step 1 — Answer these before you write tests
+
+1. Which behavior changed?
+2. What is the contract of the changed code?
+3. Which business invariants apply?
+4. Which state transitions exist?
+5. Which failure modes matter?
+6. Which security boundaries does the change touch?
+7. Which existing tests already cover this behavior? Name the file and the test.
+8. What is the smallest set of tests that gives strong confidence?
+
+Answer 7 with a search, not with a guess. A duplicate test is a cost with no
+benefit.
+
+---
+
+## Step 2 — Classify each test you consider
+
+| Class | Action |
+|---|---|
+| **CRITICAL BEHAVIOR** | MUST test |
+| **BUSINESS RULE** | MUST test |
+| **SECURITY BOUNDARY** | MUST test |
+| **IMPORTANT FAILURE MODE** | SHOULD test |
+| **REGRESSION** | SHOULD test when the bug was real |
+| **INTEGRATION CONTRACT** | Test when the integration behavior matters to us |
+| **IMPLEMENTATION DETAIL** | Do not test |
+| **FRAMEWORK BEHAVIOR** | Do not test, unless we customized or wrapped it |
+| **TRIVIAL CRUD OR BOILERPLATE** | Normally do not test |
+| **SPECULATIVE EDGE CASE** | Do not test without evidence |
+
+---
+
+## Step 3 — The "why does this test exist?" rule
+
+Before you add a test whose value is not obvious, answer four questions:
+
+1. Which bug could this test catch?
+2. Why is that bug realistic in this code?
+3. Which application behavior does it protect?
+4. Why is an existing test not sufficient?
+
+**When there is no failure story, do not write the test.**
+
+```python
+# Bad. Django guarantees this. It protects no application behavior.
+def test_user_model_exists(self) -> None:
+    ...
+
+# Good. It protects a data-integrity invariant and catches a real regression.
+def test_second_payment_does_not_pay_prize_again(self) -> None:
+    ...
+```
+
+---
+
+## Do not test every branch
+
+Do not add a test because an `if`, an `else`, an exception handler, or a helper
+method exists. A branch earns a test when it carries application behavior, an
+important failure mode, a business rule, or another contract we owe a caller.
+
+Use `subTest` for a table of related cases. One table-driven test for a boundary
+is better than four near-identical test methods.
+
+---
+
+## Test behavior, not implementation
+
+Assert on:
+
+- The returned value.
+- The persisted state.
+- The state transition.
+- The externally observable effect.
+- The business outcome.
+- The API response contract.
+
+Do not bind a test to internal wiring. Do not mock every internal method only to
+assert that it ran. Mock at the process boundary: HTTP, Kafka, Redis, a provider
+SDK, or the clock. A test that breaks under a behavior-preserving refactor is a
+cost, not a protection.
+
+The one exception: when the interaction itself is the contract. A test may assert
+that an external provider received exactly one call, because "exactly once" is
+the behavior.
+
+---
+
+## Do not test the framework
+
+Do not write tests for these:
+
+- Django creates a model.
+- Django generates a primary key.
+- A plain `ForeignKey` resolves.
+- A plain serializer field exists.
+- A plain `save()` persists.
+- Python raises the expected built-in error.
+- The standard library works.
+- An unmodified third-party library behaves as its documentation states.
+
+Test them only when we customized the behavior, wrapped it, or depend on a
+specific detail that could regress. A custom manager, an overridden `save()`, a
+custom serializer built on `BaseCustomSerializer`, and a signal handler are our
+code. Test those.
+
+---
+
+## Concentrate the effort where failure costs the most
+
+Test these carefully. Under-testing here is a defect:
+
+- Money, balances, ledger entries, commission, and settlement.
+- Authorization and authentication.
+- Idempotency and duplicate delivery.
+- Concurrency, locks, and races.
+- Transaction boundaries and rollback.
+- State machines and their invalid transitions.
+- Destructive or irreversible operations.
+- Externally visible contracts, including API responses and Kafka payloads.
+- Migration behavior on data that already exists.
+
+Test these lightly or not at all:
+
+- Trivial field mappings.
+- Simple accessors.
+- Framework-provided behavior.
+- Obvious CRUD with no business rule.
+- Boilerplate.
+
+Do not spend more test effort on trivial code than on critical business
+behavior. When the diff touches money or authorization, the test plan must show
+it.
+
+---
+
+## Step 4 — Run the test audit after you write the tests
+
+This step is mandatory. Check every new test:
+
+- [ ] It protects application behavior.
+- [ ] It has a realistic failure scenario.
+- [ ] It tests a contract or an invariant, not an implementation detail.
+- [ ] It does not test framework behavior.
+- [ ] It is not redundant with an existing test.
+- [ ] Its assertions are meaningful. It cannot pass with the assertion removed.
+- [ ] A failure would indicate a bug worth fixing.
+- [ ] Its level is correct: unit, integration, or API.
+- [ ] Its complexity is justified by its value.
+
+**Delete the low-value tests that this audit finds.** Deleting a test you wrote
+in the same change is normal. Say in your report which tests you removed and why.
+
+---
+
+## This skill does not permit under-testing
+
+"Minimal" does not mean "none". Every change needs at least one test that fails
+before the change and passes after it, unless the change is provably behavior
+neutral. State that explicitly when you skip tests.
+
+Never skip a test for:
+
+- A security or authorization boundary.
+- A financial calculation or a balance mutation.
+- An idempotency guarantee.
+- A concurrency or locking guarantee.
+- A transaction or rollback boundary.
+- A business rule that a product requirement states.
+- A bug fix. A regression test must fail before the fix.
+
+When you cannot test one of these, say why, and name the risk in your report.
+
+---
+
+## Report what you decided
+
+```
+Test decisions
+- <behavior> — BUSINESS RULE — <test file>::<test name>
+- <behavior> — covered already by <file>::<test>, not duplicated
+- <behavior> — FRAMEWORK BEHAVIOR — not tested
+Audit: removed <n> tests — <reason>
+```
+
+---
+
+## Related
+
+- `python-style` — Python style and test naming.
+- `django-practices` — ORM, transaction, and migration risk that tests must cover.
+- `validation-discipline` — the same reasoning for validation. Do not add
+  validation only to satisfy a test. Do not add a test only because validation
+  exists.
+- `standards/implementation_standards.ai.md` — how to write the tests.
+- `spec` — where the criteria live, and how a spec delta adds one.
+- `review-protocol` — how the reviewer judges your test set.
+- Optional host-repository document, read only when present:
+  `aidocs/test_selection.ai.md` for which existing tests to run.

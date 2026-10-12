@@ -1,0 +1,33 @@
+---
+description: Check the verification tools this workflow needs, and install the missing ones
+argument-hint: [empty to report, or --install]
+---
+
+Load the `toolchain` skill and handle this: $ARGUMENTS
+
+With no argument, only report. Run:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}"/bin/craft-toolchain
+```
+
+Report its output as it is, then add three lines:
+
+1. Which required tools are missing, and which checks they block.
+2. Whether the check runs on this host or inside a container. A host install does
+   not put a tool inside a container.
+3. The one command that fixes it.
+
+**Stop there and wait.** Do not install anything until the developer agrees.
+Installing software changes their machine.
+
+With `--install`, the developer has already agreed. Run:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}"/bin/craft-toolchain --install
+```
+
+Then prove the result with `"${CLAUDE_PLUGIN_ROOT}"/bin/craft-doctor` and say
+what it reports. Never say the tooling is fixed before a command you ran says so.
+
+Never install `yapf`. `config/workflow.md` §6 forbids it.
