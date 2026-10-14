@@ -1,0 +1,174 @@
+{
+  "id": "laravel",
+  "label": "Laravel",
+  "emoji": "\ud83d\udfe5",
+  "language": "php",
+  "priority": 75,
+  "detect": {
+    "any_file": [
+      "artisan"
+    ],
+    "any_contains": [
+      {
+        "files": [
+          "composer.json"
+        ],
+        "pattern": "\"laravel/framework\""
+      }
+    ]
+  },
+  "source_extensions": [
+    ".php"
+  ],
+  "tests": {
+    "globs": [
+      "tests/*",
+      "*/tests/*",
+      "*Test.php"
+    ],
+    "extensions": [
+      ".php"
+    ],
+    "id_rule": "Put the criterion ID first in the test title: Pest it('PAY-3: given ..., when ..., then ...'), or in #[TestDox('PAY-3: ...')], or in a // comment directly above the PHPUnit test method."
+  },
+  "checks": {
+    "tests": [
+      {
+        "when_script": "test",
+        "run": "composer test"
+      },
+      {
+        "when_dependency": "pestphp/pest",
+        "run": "vendor/bin/pest"
+      },
+      {
+        "when_file": "artisan",
+        "run": "php artisan test"
+      },
+      {
+        "run": "vendor/bin/phpunit"
+      }
+    ],
+    "types": [
+      {
+        "when_dependency": "phpstan/phpstan",
+        "run": "vendor/bin/phpstan analyse"
+      },
+      {
+        "when_dependency": "larastan/larastan",
+        "run": "vendor/bin/phpstan analyse"
+      },
+      {
+        "when_dependency": "nunomaduro/larastan",
+        "run": "vendor/bin/phpstan analyse"
+      },
+      {
+        "when_dependency": "vimeo/psalm",
+        "run": "vendor/bin/psalm"
+      }
+    ],
+    "format": [
+      {
+        "when_dependency": "laravel/pint",
+        "run": "vendor/bin/pint --test"
+      },
+      {
+        "when_dependency": "friendsofphp/php-cs-fixer",
+        "run": "vendor/bin/php-cs-fixer fix --dry-run --diff"
+      }
+    ]
+  },
+  "paths": {
+    "money": [
+      "*/Wallet*/*",
+      "*/Ledger/*",
+      "*/Payment*/*",
+      "*/Payout*/*",
+      "*/Withdraw*/*",
+      "*/Deposit*/*",
+      "*/Transfer*/*",
+      "*/Settlement*/*",
+      "*/Billing/*",
+      "*Balance*.php",
+      "*Fee*.php",
+      "*Commission*.php",
+      "*Money*.php"
+    ],
+    "auth": [
+      "*/Auth/*",
+      "app/Policies/*",
+      "*/Policies/*",
+      "*Policy.php",
+      "*/Guards/*",
+      "*Guard.php",
+      "*Password*.php",
+      "*Token*.php",
+      "*Permission*.php",
+      "*Otp*.php",
+      "config/auth.php"
+    ],
+    "migrations": [
+      "database/migrations/*",
+      "*/database/migrations/*"
+    ],
+    "models": [
+      "app/Models/*",
+      "*/app/Models/*",
+      "*/Repositories/*",
+      "*Repository.php"
+    ],
+    "views": [
+      "*/Controllers/*",
+      "routes/*.php",
+      "*/routes/*.php",
+      "*/Requests/*",
+      "*/Resources/*"
+    ]
+  },
+  "concurrency": {
+    "skill": "",
+    "note": "PHP runs one process per request under PHP-FPM, so a request shares nothing. Long-lived workers (Octane, RoadRunner, Swoole, FrankenPHP) keep state between requests; avoid static state there."
+  },
+  "toolchain": [
+    {
+      "id": "php",
+      "purpose": "The PHP interpreter.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "php"
+        }
+      ]
+    },
+    {
+      "id": "composer",
+      "purpose": "Composer, the PHP package manager.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "composer"
+        }
+      ]
+    },
+    {
+      "id": "phpstan",
+      "purpose": "PHPStan, the static analyzer, for the types check.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "vendor/bin/phpstan"
+        },
+        {
+          "command": "phpstan"
+        }
+      ]
+    }
+  ],
+  "skills": [
+    "php-practices"
+  ],
+  "standards": [
+    "php_standards"
+  ],
+  "lenses": "stacks/laravel/lenses.md"
+}

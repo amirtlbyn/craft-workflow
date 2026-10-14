@@ -2,7 +2,7 @@
 
 ---
 name: stack
-description: "🧩 The stacks of this repository (Django, FastAPI, Go, Java, Node), their checks, and their skills. Arguments: [detect | checks | skills | set <id> | unset | list]."
+description: "🧩 The stacks of this repository (Django, FastAPI, Go, Java, Node, PHP), their checks, and their skills. Arguments: [detect | checks | skills | set <id> | unset | list]."
 ---
 
 Invoke explicitly: `$stack [detect | checks | skills | set <id> | unset | list]`.

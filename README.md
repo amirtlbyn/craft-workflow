@@ -1,7 +1,7 @@
 # craft-workflow
 
 A spec-driven, cost-routed engineering workflow for Claude Code, packaged as a
-plugin, for any backend stack: 🐍 Django, ⚡ FastAPI, 🐹 Go, ☕ Java, 🟩 Node.
+plugin, for any backend stack: 🐍 Django, ⚡ FastAPI, 🐹 Go, ☕ Java, 🟩 Node, 🐘 PHP (🟥 Laravel, 🎼 Symfony).
 
 It answers four questions on every request: **how much process does this
 deserve**, **what exactly are we building**, **what code should not be written
@@ -66,14 +66,14 @@ plugin's own wiring. `/craft-toolchain` finds the linter, formatter, test runner
 and type checker a repository needs, and asks before installing anything.
 
 **🧩 Every backend stack (0.7).** `bin/craft-stack` detects Django, FastAPI,
-Go, Java, and Node, per directory in a monorepo. The stack picks the skills,
+Go, Java, Node, and PHP (Laravel, Symfony; 0.9), per directory in a monorepo. The stack picks the skills,
 the Gate A commands, the path globs that set risk, and the reviewer's lens
 notes. `bin/craft-spec trace` finds criterion IDs in every language's tests.
 
 **🧵 High concurrency only where the system is built for it (0.7).** The
 `concurrency` skill reads the model a service runs (sync Django on WSGI,
 async-native FastAPI, goroutines, Spring MVC, virtual threads, reactive, the
-Node event loop) and says `ready`, `limited`, or `not-ready`. `fastapi-async`
+Node event loop, PHP-FPM or long-lived PHP workers) and says `ready`, `limited`, or `not-ready`. `fastapi-async`
 and `go-concurrency` hold the patterns for systems that are ready. A system
 that is not ready gets a cheaper fix, a background job, or a `project` that
 changes the model on purpose, never async as a side effect.
@@ -227,6 +227,7 @@ format.
 | 🐹 Go | `go.mod` | `t.Run("WDL-3 …")` or `// WDL-3:` | `go test`, `go test -race`, `go vet`, `golangci-lint`, `gofmt` | `go-concurrency` |
 | ☕ Java | `pom.xml`, `build.gradle*` | `@DisplayName("WDL-3: …")` | `./mvnw test` or `./gradlew test`, Spotless, Checkstyle | the model the report names |
 | 🟩 Node | `package.json` | `it('WDL-3: …')` | `pnpm test`, ESLint, Prettier, `tsc --noEmit` | the event loop, bounded |
+| 🟥 Laravel, 🎼 Symfony, 🐘 PHP | `artisan` or `laravel/framework`; `symfony/framework-bundle`; any `composer.json` | `it('WDL-3: …')`, `#[TestDox('WDL-3: …')]`, or a `//` comment above the test | `composer test`, `vendor/bin/pest`, `php artisan test` (Laravel) or `phpunit`; PHPStan or Psalm; Pint (Laravel) or PHP-CS-Fixer | the report names it: process per request, long-lived workers, or event loop |
 
 `bin/craft-stack checks` prints the commands it resolved for this repository.
 A host `.claude/craft.md` overrides any of them. To add a stack, see
@@ -448,7 +449,7 @@ evals/                       measures the plugin's own claims, with and without 
 | `spec` | Writing, approving, or changing a spec |
 | `planner` | Turning an approved project spec into a design and sessions |
 | `python-style` / `django-practices` | Python / Django work |
-| `fastapi-practices`, `go-practices`, `java-practices`, `node-practices` | Work in that stack. `bin/craft-stack skills` names them |
+| `fastapi-practices`, `go-practices`, `java-practices`, `node-practices`, `php-practices` | Work in that stack. `bin/craft-stack skills` names them |
 | `concurrency` | Concurrent code for throughput, or a request for async, parallel, or "high concurrency" |
 | `fastapi-async` / `go-concurrency` | Async FastAPI / goroutines, when the concurrency report says ready |
 | `minimal-code` | Writing any new function, class, module, helper, or dependency |

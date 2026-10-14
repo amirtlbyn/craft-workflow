@@ -61,6 +61,10 @@ TEST_DEFS = {
     ],
     ".java": [re.compile(r"^\s*(?:public\s+|protected\s+|private\s+)?(?:static\s+)?void\s+(\w+)\s*\(")],
     ".kt": [re.compile(r"^\s*fun\s+(?:`([^`]+)`|(\w+))\s*\(")],
+    ".php": [
+        re.compile(r"^\s*(?:it|test)(?:\.(?:only|skip))?\s*\(\s*['\"](.+?)['\"]"),
+        re.compile(r"^\s*(?:public\s+|protected\s+|private\s+)?(?:static\s+)?function\s+(\w+)\s*\("),
+    ],
     "js": [re.compile(r"^\s*(?:it|test)(?:\.(?:only|skip|each\([^)]*\)|concurrent))?\s*\(\s*['\"`](.+?)['\"`]")],
 }
 JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")

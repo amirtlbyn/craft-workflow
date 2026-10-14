@@ -121,7 +121,7 @@ application.
   `.claude-plugin/plugin.json`): the status, the craft board, cost per agent.
   It enforces nothing. ZCode and Codex do not load it.
 - `stacks/<id>/stack.json` are the stack packs (django, fastapi, go, java,
-  node) that `bin/craft-stack` detects. `config/deciders.json` lists the AI
+  node, laravel, symfony, php) that `bin/craft-stack` detects. `config/deciders.json` lists the AI
   deciders `bin/craft-decide` chooses from.
 
 ## Generated files - do not hand-edit

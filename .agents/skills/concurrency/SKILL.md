@@ -95,6 +95,7 @@ its `load` line:
 | Go | `go-concurrency` | goroutines, channels, `context.Context` |
 | Java | this skill, and `java-practices` | thread-per-request, virtual threads, or reactive: the report says which |
 | Node | this skill, and `node-practices` | one event loop, promises |
+| Laravel, Symfony, PHP | this skill, and `php-practices` (no concurrency skill) | a process per request, long-lived workers, or an event loop: the report says which |
 | Django | this skill | sync. Celery for parallel work |
 
 The rules that hold on every stack:

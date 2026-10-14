@@ -28,7 +28,8 @@ Change a row and the behavior changes. Delete a row and the step stops running.
 
 ## Add a stack
 
-Five stacks ship in `stacks/`: `django`, `fastapi`, `go`, `java`, `node`. To add
+Eight stacks ship in `stacks/`: `django`, `fastapi`, `go`, `java`, `node`,
+`laravel`, `symfony`, `php`. To add
 one, for example Rust:
 
 1. Copy `stacks/go/` to `stacks/rust/` and edit `stack.json`:

@@ -1,6 +1,6 @@
 ---
 description: 🧵 Is this system built for high concurrency? The model it runs, the verdict, what is allowed, and what to avoid
-argument-hint: "[--stack django|fastapi|go|java|node]"
+argument-hint: "[--stack django|fastapi|go|java|node|laravel|symfony|php]"
 ---
 
 Load the `concurrency` skill, then run from the host repository root:

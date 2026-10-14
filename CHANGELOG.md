@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.0 — 2026-10-14 — PHP: Laravel, Symfony, and plain PHP
+
+### What changed for the developer
+
+- **Three new stacks.** `bin/craft-stack` detects 🟥 Laravel (`artisan`, or
+  `laravel/framework`), 🎼 Symfony (`symfony/framework-bundle`), and 🐘 PHP (any
+  `composer.json`). Laravel and Symfony win over plain PHP in the same
+  directory. A monorepo gets one stack per service, as before.
+- **Checks come from `composer.json`.** Tests run `composer test` when the
+  project has a `test` script, else `vendor/bin/pest` with Pest, else
+  `php artisan test` on Laravel, else `vendor/bin/phpunit`. Types run PHPStan
+  (or Larastan on Laravel), else Psalm. Format runs Pint on Laravel, else
+  PHP-CS-Fixer. Each check runs only when its tool is a dependency, and
+  `bin/craft-check` records them.
+- **Trace forms.** `bin/craft-spec trace` finds a criterion ID in a Pest
+  `it('PAY-3: ...')` title, in `#[TestDox('PAY-3: ...')]`, and in a `//` comment
+  directly above a PHPUnit method.
+- **The scenario gate covers PHP tests.** `tests/`, `*/tests/`, and `*Test.php`
+  count as test files: they stay closed until you approve the scenarios.
+- **Paths.** Money, auth, migration, model, and controller globs for PHP raise
+  risk and route lenses, for example a `Voter`, a `Policy`, or `database/migrations/`.
+- **Concurrency verdicts.** PHP-FPM runs one process per request: `limited`.
+  Octane, RoadRunner, Swoole, and FrankenPHP keep workers alive between
+  requests: `limited`, with a warning about state that leaks between requests.
+  ReactPHP and Amp run an event loop: `ready`. There is no PHP concurrency skill.
+- **Toolchain.** `bin/craft-toolchain` checks `php`, `composer`, and PHPStan.
+- **New skill `php-practices`** and **new standard `php_standards.ai.md`**
+  (bot-maintainable until a team renames it to `.human.md`). Lens notes for
+  each stack are in `stacks/<id>/lenses.md`.
+
+### What did not change
+
+- Django, FastAPI, Go, Java, and Node behave as in 0.8.0.
+- The routes, the two approvals, and the gates are the same. No PHP tool is
+  required to use the other stacks.
+
 ## 0.8.0 — 2026-10-14 — the scenario gate returns
 
 ### What changed for the developer

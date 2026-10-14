@@ -15,10 +15,11 @@ and offers the one command that fixes it.
     craft-toolchain --stack go           check one stack's tools instead of the detected ones
 
 Which tools: the toolchain of every stack bin/craft-stack detects. Django, the
-reference stack, uses config/toolchain.json. FastAPI, Go, Java, and Node use the
+reference stack, uses config/toolchain.json. FastAPI, Go, Java, Node, and PHP use the
 "toolchain" list of their stacks/<id>/stack.json. A Go tool installs with
 `go install`, a Node tool with `npm install -g`, a Python tool with the
-detected Python installer.
+detected Python installer. A PHP tool is reported, not installed: it is a
+Composer dev dependency of the project.
 
 Reporting never changes anything. Only --install runs a command, it prints each
 command before it runs it, and it stops at the first failure.

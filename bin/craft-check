@@ -69,12 +69,13 @@ LABEL_GUESSES = (
     (r"spotless", "format"),
     (r"\bgo\s+vet\b", "vet"),
     (r"\b(pytest|manage\.py test|unittest|go\s+test|gotestsum|vitest|jest|mocha|node --test)\b", "tests"),
+    (r"\b(phpunit|pest)\b|artisan\s+test|\bcomposer\s+(run\s+)?test\b", "tests"),
     (r"\b(mvnw?|gradlew?)\b.*\btest\b", "tests"),
     (r"\b(npm|pnpm|yarn|bun)\s+(run\s+)?test\b", "tests"),
     (r"\b(pylint|flake8|golangci-lint|eslint)\b|ruff\s+check|biome\s+lint|\brun\s+lint\b", "lint"),
     (r"\bisort\b", "imports"),
-    (r"\b(black|pyink|gofmt|prettier)\b|ruff\s+format|biome\s+format|format:check", "format"),
-    (r"\b(mypy|pyright|basedpyright|tsc)\b|typecheck", "types"),
+    (r"\b(black|pyink|gofmt|prettier)\b|ruff\s+format|biome\s+format|format:check|\b(pint|php-cs-fixer|phpcs)\b", "format"),
+    (r"\b(mypy|pyright|basedpyright|tsc|phpstan|psalm)\b|typecheck", "types"),
     (r"\b(mvnw?|gradlew?)\b.*\b(verify|build)\b", "build"),
 )
 JUNIT_PLACES = (

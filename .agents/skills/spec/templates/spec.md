@@ -51,8 +51,8 @@ None.
 
 <!-- The sections the implementer and the reviewer must read. Use the names
      that `bin/craft-std --list` prints: python_code_style and django_standards
-     on Django, fastapi_standards, go_standards, java_standards, node_standards
-     on the other stacks. Keep it to what this change touches. -->
+     on Django, fastapi_standards, go_standards, java_standards, node_standards,
+     php_standards on the other stacks. Keep it to what this change touches. -->
 - python_code_style: Naming, Type annotations
 - Checkpoint: `<the real test command from config/workflow.md section 6>`
 

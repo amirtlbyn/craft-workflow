@@ -34,7 +34,7 @@ Then run `bin/craft-spec status`. When a spec is active, the request may be the
 next step of that spec. Say so, and continue it instead of starting over.
 
 Then run `bin/craft-stack` once per session. It names the stacks of the
-repository (🐍 django, ⚡ fastapi, 🐹 go, ☕ java, 🟩 node) and the directory
+repository (🐍 django, ⚡ fastapi, 🐹 go, ☕ java, 🟩 node, 🟥 laravel, 🎼 symfony, 🐘 php) and the directory
 each one owns. The stack decides the skills you load
 (`bin/craft-stack skills --paths <files>`), the checks that prove Gate A
 (`bin/craft-stack checks`), and the lens notes reviewers read. When no stack is
@@ -72,7 +72,7 @@ restate the route.
 1. Make the change in the main session. Load the skills
    `bin/craft-stack skills --paths <the files>` names: `python-style` and
    `django-practices` for Django, `fastapi-practices` for FastAPI,
-   `go-practices` for Go, `java-practices`, `node-practices`. Read
+   `go-practices` for Go, `java-practices`, `node-practices`, `php-practices` for PHP. Read
    `skills/asd-ste100/references/card.md` before you write a comment or
    docstring.
 2. Run the focused checks from §6, or the stack's from `bin/craft-stack

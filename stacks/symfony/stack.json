@@ -1,0 +1,154 @@
+{
+  "id": "symfony",
+  "label": "Symfony",
+  "emoji": "\ud83c\udfbc",
+  "language": "php",
+  "priority": 72,
+  "detect": {
+    "any_contains": [
+      {
+        "files": [
+          "composer.json"
+        ],
+        "pattern": "\"symfony/framework-bundle\""
+      }
+    ]
+  },
+  "source_extensions": [
+    ".php"
+  ],
+  "tests": {
+    "globs": [
+      "tests/*",
+      "*/tests/*",
+      "*Test.php"
+    ],
+    "extensions": [
+      ".php"
+    ],
+    "id_rule": "Put the criterion ID first in the test title: Pest it('PAY-3: given ..., when ..., then ...'), or in #[TestDox('PAY-3: ...')], or in a // comment directly above the PHPUnit test method."
+  },
+  "checks": {
+    "tests": [
+      {
+        "when_script": "test",
+        "run": "composer test"
+      },
+      {
+        "when_dependency": "pestphp/pest",
+        "run": "vendor/bin/pest"
+      },
+      {
+        "run": "vendor/bin/phpunit"
+      }
+    ],
+    "types": [
+      {
+        "when_dependency": "phpstan/phpstan",
+        "run": "vendor/bin/phpstan analyse"
+      },
+      {
+        "when_dependency": "vimeo/psalm",
+        "run": "vendor/bin/psalm"
+      }
+    ],
+    "format": [
+      {
+        "when_dependency": "friendsofphp/php-cs-fixer",
+        "run": "vendor/bin/php-cs-fixer fix --dry-run --diff"
+      }
+    ]
+  },
+  "paths": {
+    "money": [
+      "*/Wallet*/*",
+      "*/Ledger/*",
+      "*/Payment*/*",
+      "*/Payout*/*",
+      "*/Withdraw*/*",
+      "*/Deposit*/*",
+      "*/Transfer*/*",
+      "*/Settlement*/*",
+      "*/Billing/*",
+      "*Balance*.php",
+      "*Fee*.php",
+      "*Commission*.php",
+      "*Money*.php"
+    ],
+    "auth": [
+      "*/Security/*",
+      "src/Security/*",
+      "*Voter.php",
+      "*/Voter/*",
+      "*Authenticator.php",
+      "*Guard.php",
+      "*Password*.php",
+      "*Token*.php",
+      "config/packages/security.yaml"
+    ],
+    "migrations": [
+      "migrations/*",
+      "*/migrations/*"
+    ],
+    "models": [
+      "src/Entity/*",
+      "*/src/Entity/*",
+      "src/Repository/*",
+      "*/src/Repository/*",
+      "*Repository.php"
+    ],
+    "views": [
+      "src/Controller/*",
+      "*/src/Controller/*",
+      "*/Controller/*",
+      "src/Form/*",
+      "*/src/Form/*"
+    ]
+  },
+  "concurrency": {
+    "skill": "",
+    "note": "PHP runs one process per request under PHP-FPM, so a request shares nothing. Long-lived workers (Octane, RoadRunner, Swoole, FrankenPHP) keep state between requests; avoid static state there."
+  },
+  "toolchain": [
+    {
+      "id": "php",
+      "purpose": "The PHP interpreter.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "php"
+        }
+      ]
+    },
+    {
+      "id": "composer",
+      "purpose": "Composer, the PHP package manager.",
+      "required": true,
+      "any_of": [
+        {
+          "command": "composer"
+        }
+      ]
+    },
+    {
+      "id": "phpstan",
+      "purpose": "PHPStan, the static analyzer, for the types check.",
+      "required": false,
+      "any_of": [
+        {
+          "command": "vendor/bin/phpstan"
+        },
+        {
+          "command": "phpstan"
+        }
+      ]
+    }
+  ],
+  "skills": [
+    "php-practices"
+  ],
+  "standards": [
+    "php_standards"
+  ],
+  "lenses": "stacks/symfony/lenses.md"
+}

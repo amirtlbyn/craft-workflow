@@ -30,7 +30,7 @@ Replace them with your own documents to retarget the whole workflow.
 **Per stack (§9).** The four documents above are the Django stack's. Every other
 stack adds its own standard, named in its `stacks/<id>/stack.json`:
 `fastapi_standards.ai.md`, `go_standards.ai.md`, `java_standards.ai.md`,
-`node_standards.ai.md`. They are bot-maintainable until a team renames one to
+`node_standards.ai.md`, `php_standards.ai.md`. They are bot-maintainable until a team renames one to
 `.human.md`. `technical_standards` TS-1 to TS-5 apply to every stack that owns a
 database.
 
@@ -197,6 +197,7 @@ own. The `craft` skill uses this table as its routing map.
 | Go code | `go-practices` |
 | Java or Kotlin on the JVM, Spring Boot, JPA | `java-practices` |
 | Node.js or TypeScript backend code | `node-practices` |
+| PHP code: Laravel, Symfony, Composer packages | `php-practices` |
 | Concurrent code for throughput, or a request for "async", "parallel", "high concurrency", "faster" | `concurrency` first. It loads the stack's own skill only when the system is built for it |
 | async code in a FastAPI service the concurrency report calls ready | `fastapi-async` |
 | goroutines, channels, worker pools, or shared state in Go | `go-concurrency` |
@@ -280,6 +281,9 @@ gets one stack per service. Each stack is a pack in `stacks/<id>/stack.json`:
 | 🐹 `go` | `go.mod` | `go-practices` | `go-concurrency` |
 | ☕ `java` | `pom.xml`, `build.gradle*` | `java-practices` | the model the report names |
 | 🟩 `node` | `package.json` | `node-practices` | the model the report names |
+| 🟥 `laravel` | `artisan`, or `laravel/framework` | `php-practices` | the model the report names |
+| 🎼 `symfony` | `symfony/framework-bundle` | `php-practices` | the model the report names |
+| 🐘 `php` | any `composer.json` | `php-practices` | the model the report names |
 
 A pack gives: the test globs and how a test names a criterion, so
 `bin/craft-spec trace` works in every language; the check commands of §6; the

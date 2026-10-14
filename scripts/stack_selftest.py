@@ -94,11 +94,19 @@ def test_stacks():
     mono = repo({"services/wallet/go.mod": "module w\n", "web/package.json": "{}",
                  "api/pyproject.toml": 'dependencies = ["fastapi"]\n'})
     both = repo({"manage.py": "", "requirements.txt": "django\nfastapi\n", "package.json": "{}"})
+    laravel = repo({"artisan": "", "composer.json": '{"require":{"laravel/framework":"^11"}}', "package.json": "{}"})
+    symfony = repo({"composer.json": '{"require":{"symfony/framework-bundle":"^7"}}'})
+    php = repo({"composer.json": '{"require":{"slim/slim":"^4"}}'})
     plain = repo({"README.md": "# nothing"})
     lookalike = repo({"requirements.txt": "django-environ\ndjangorestframework-simplejwt\n"})
 
     check(group, "manage.py is django", ids(craft_stack.detect(str(django))), "django@.")
     check(group, "fastapi in pyproject is fastapi", ids(craft_stack.detect(str(fastapi))), "fastapi@.")
+    check(group, "artisan and laravel/framework beat the Vite package.json", ids(craft_stack.detect(str(laravel))),
+          "laravel@.,node@.")
+    check(group, "the root's primary is laravel, not node", craft_stack.primary(str(laravel)), "laravel")
+    check(group, "symfony/framework-bundle is symfony", ids(craft_stack.detect(str(symfony))), "symfony@.")
+    check(group, "any other composer.json is php", ids(craft_stack.detect(str(php))), "php@.")
     check(group, "go.mod is go", ids(craft_stack.detect(str(go))), "go@.")
     check(group, "pom.xml is java", ids(craft_stack.detect(str(java))), "java@.")
     check(group, "package.json is node", ids(craft_stack.detect(str(node))), "node@.")

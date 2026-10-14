@@ -342,7 +342,7 @@ def checks_for(stack_id, cwd=None, directory=""):
         data = pack(stack_id)
         root = craft_state.host_root(cwd)
         base = root / directory if directory else root
-        manifest = _package_json(base)
+        manifest = _manifest(base, data.get("language"))
         manager = _node_manager(base)
         for label, candidates in (data.get("checks") or {}).items():
             if not isinstance(candidates, list):
@@ -390,11 +390,24 @@ def _candidate_applies(candidate, base, manifest):
 
 
 def _package_json(base):
+    return _json_file(base / "package.json")
+
+
+def _json_file(path):
     try:
-        data = json.loads(_read(base / "package.json") or "{}")
+        data = json.loads(_read(path) or "{}")
         return data if isinstance(data, dict) else {}
     except ValueError:
         return {}
+
+
+def _manifest(base, language):
+    """Return the manifest of a pack's language: composer.json for php, package.json otherwise."""
+    if language != "php":
+        return _package_json(base)
+    composer = _json_file(base / "composer.json")
+    keys = (("scripts", "scripts"), ("require", "dependencies"), ("require-dev", "devDependencies"))
+    return {target: composer[source] for source, target in keys if isinstance(composer.get(source), dict)}
 
 
 def _node_manager(base):
@@ -698,12 +711,70 @@ def _concurrency_node(base):
     }
 
 
+def _concurrency_php(base):
+    path = base / "composer.json"
+    allowed = ["a queue (Laravel queues and Horizon, Symfony Messenger) for slow work",
+               "Http::pool, Guzzle promises, or concurrent Symfony HttpClient requests, with a bound and a timeout",
+               "a database lock or an atomic guarded update for money"]
+    avoid = ["pcntl_fork in a web request", "unbounded promise or request fan-out", "sleep in a request",
+             "long work in the request cycle"]
+    manifest = None
+    if path.is_file():
+        try:
+            manifest = json.loads(_read(path) or "")
+        except ValueError:
+            manifest = None
+        if not isinstance(manifest, dict):
+            return {
+                "model": "unknown", "verdict": "not-ready",
+                "summary": "composer.json is not valid JSON, so the concurrency model cannot be read. Fix it first.",
+                "evidence": ["composer.json does not parse"], "allowed": [], "avoid": avoid,
+            }
+    names = {}
+    for key in ("require", "require-dev"):
+        if isinstance(manifest, dict) and isinstance(manifest.get(key), dict):
+            names.update(manifest[key])
+    workers = sorted(name for name in names if name.startswith((
+        "laravel/octane", "spiral/roadrunner", "openswoole/", "swoole/swoole", "runtime/frankenphp-symfony")))
+    event = sorted(name for name in names if name in (
+        "react/event-loop", "react/http", "react/socket", "amphp/amp", "amphp/http-server", "revolt/event-loop"))
+    if workers:
+        return {
+            "model": "long-lived workers", "verdict": "limited",
+            "summary": ("Long-lived workers keep the application in memory between requests. Request data must not "
+                        "outlive the request. Changing the model is a project."),
+            "evidence": ["%s is a dependency" % name for name in workers],
+            "allowed": allowed,
+            "avoid": avoid + ["static properties that hold request data", "a singleton that holds request data",
+                              "a container binding that captures the request"],
+        }
+    if event:
+        return {
+            "model": "event loop", "verdict": "ready",
+            "summary": "An event loop (ReactPHP or Amp). I/O concurrency is native. Never block the loop.",
+            "evidence": ["%s is a dependency" % name for name in event],
+            "allowed": allowed + ["promises and streams on the event loop, bounded"],
+            "avoid": avoid + ["a blocking call on the loop"],
+        }
+    return {
+        "model": "process per request", "verdict": "limited",
+        "summary": ("PHP-FPM: one process per request, nothing shared. Move slow work to a queue. Do not "
+                    "introduce a worker server or an event loop without a project."),
+        "evidence": ["no worker server or event loop in composer.json"],
+        "allowed": allowed,
+        "avoid": avoid,
+    }
+
+
 ANALYZERS = {
     "django": _concurrency_django,
     "fastapi": _concurrency_fastapi,
     "go": _concurrency_go,
     "java": _concurrency_java,
     "node": _concurrency_node,
+    "laravel": _concurrency_php,
+    "symfony": _concurrency_php,
+    "php": _concurrency_php,
 }
 
 

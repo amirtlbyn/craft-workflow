@@ -1,5 +1,5 @@
 ---
-description: 🧩 The stacks of this repository (Django, FastAPI, Go, Java, Node), their checks, and their skills
+description: 🧩 The stacks of this repository (Django, FastAPI, Go, Java, Node, PHP), their checks, and their skills
 argument-hint: "[detect | checks | skills | set <id> | unset | list]"
 ---
 
