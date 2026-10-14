@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — unreleased — the scenario gate returns
+## 0.8.0 — 2026-10-14 — the scenario gate returns
 
 ### What changed for the developer
 
