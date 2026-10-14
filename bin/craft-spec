@@ -177,7 +177,7 @@ def command_new(argv):
         "date": today,
         "checkpoint": checkpoint or "<the real test command from config/workflow.md section 6>",
     }
-    files = ["spec.md", "tasks.md", "log.md"] + (["design.md"] if route == "project" else [])
+    files = ["spec.md", "tasks.md", "log.md", "scenarios.md"] + (["design.md"] if route == "project" else [])
     try:
         directory.mkdir(parents=True)
         for filename in files:

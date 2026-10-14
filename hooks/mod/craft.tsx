@@ -27,9 +27,14 @@ import {
   mark,
   markColor,
   oneLineStatus,
+  overflow,
   pct,
+  rowParts,
+  scenarioRows,
+  scenariosGlyph,
   severityColor,
   severityRank,
+  shifted,
   shortModel,
   specState,
   summaryText,
@@ -43,10 +48,11 @@ const PANE = 'craft-board'
 const TABS: { id: Tab; label: string; hotkey: string }[] = [
   { id: 'spec', label: 'Spec', hotkey: '1' },
   { id: 'tasks', label: 'Tasks', hotkey: '2' },
-  { id: 'gates', label: 'Gates', hotkey: '3' },
-  { id: 'review', label: 'Review', hotkey: '4' },
-  { id: 'cost', label: 'Cost', hotkey: '5' },
-  { id: 'deciders', label: 'Deciders', hotkey: '6' },
+  { id: 'scenarios', label: 'Scenarios', hotkey: '3' },
+  { id: 'gates', label: 'Gates', hotkey: '4' },
+  { id: 'review', label: 'Review', hotkey: '5' },
+  { id: 'cost', label: 'Cost', hotkey: '6' },
+  { id: 'deciders', label: 'Deciders', hotkey: '7' },
 ]
 // The document viewer: the active spec's files, one hotkey each.
 const VIEWER = 'craft-doc'
@@ -55,9 +61,12 @@ const DOCS: { id: DocName; file: string; hotkey: string }[] = [
   { id: 'design', file: 'design.md', hotkey: 'd' },
   { id: 'tasks', file: 'tasks.md', hotkey: 't' },
   { id: 'log', file: 'log.md', hotkey: 'l' },
+  { id: 'scenarios', file: 'scenarios.md', hotkey: 'n' },
 ]
 const REFRESH_EVERY_MS = 20_000
 const NOTICE_MS = 8_000
+// Columns one h or l shifts the board's long text by (TSC-13).
+const SCROLL_STEP = 20
 const WRITE_TOOLS = /^(Write|Edit|MultiEdit|NotebookEdit)$/
 const TEST_COMMAND = /^(\s*)(pytest|python -m pytest|go test|gotestsum|\.\/mvnw|mvn|\.\/gradlew|gradle|npm test|pnpm test|yarn test|bun test|npx vitest|npx jest|cargo test)\b/
 const WAITING = new Set(['proposed', 'plausible'])
@@ -70,6 +79,18 @@ const doc = atom({ plugin: 'craft-workflow', key: 'doc' } as const, 'spec')
 const placed = atom({ plugin: 'craft-workflow', key: 'placed' } as const, false)
 const confirmApprove = atom({ plugin: 'craft-workflow', key: 'confirmApprove' } as const, false)
 const stale = atom({ plugin: 'craft-workflow', key: 'stale' } as const, '')
+// The open field: `ID:n` edits scenario n, `ID:add` adds one to ID; '' when none is open.
+const editScenario = atom({ plugin: 'craft-workflow', key: 'editScenario' } as const, '')
+// The text of the scenario being edited, as it was when the field opened; '' when none is open.
+const editOpened = atom({ plugin: 'craft-workflow', key: 'editOpened' } as const, '')
+// The selected row of the Scenarios tab, `ID:n` (`ID:0` for a criterion with none).
+const scenarioCursor = atom({ plugin: 'craft-workflow', key: 'scenarioCursor' } as const, '')
+// The scenario the delete confirm was opened for, as it was drawn; null when closed.
+const deleteScenario = atom({ plugin: 'craft-workflow', key: 'deleteScenario' } as const, null)
+// How many columns the long text of the board's rows is shifted left.
+const hscroll = atom({ plugin: 'craft-workflow', key: 'hscroll' } as const, 0)
+// The sha of the scenarios the confirm was opened for; '' when closed.
+const confirmScenarios = atom({ plugin: 'craft-workflow', key: 'confirmScenarios' } as const, '')
 
 // Module state: lost on a reload, rebuilt on the next event.
 let prices: PriceRow[] = DEFAULT_PRICES
@@ -82,6 +103,8 @@ let refusedEdit = ''
 let placement = 'top'
 let autoCheck = false
 let gateQuestion = true
+let savingScenario = false
+let addCount = 0
 
 // ---------------------------------------------------------------------------
 // State
@@ -120,6 +143,11 @@ async function refresh($: EngineInterface) {
   }
   await update($, stale, () => '')
   if (next.spec?.state === 'approved') refusedEdit = ''
+  const confirming = await read($, confirmScenarios)
+  if (confirming && confirming !== (next.scenarios?.sha || '-') && !next.error) {
+    await update($, confirmScenarios, () => '')
+    await setNotice($, 'The scenarios changed after you opened the confirm. Read them again, then approve.')
+  }
   await update($, snapshot, () => next)
   await rollBook($, next)
   announce($, next)
@@ -195,7 +223,13 @@ async function addUsage($: EngineInterface, agentId: string | undefined, usage: 
 }
 
 async function openBoard($: EngineInterface, which: Tab | null) {
-  if (which) await update($, tab, () => which)
+  if (which) {
+    await update($, tab, () => which)
+    await update($, hscroll, () => 0)
+  }
+  await update($, confirmScenarios, () => '')
+  await update($, editScenario, () => '')
+  await update($, deleteScenario, () => null)
   const result = await $.ui.open({ id: PANE, title: '🗂 Craft', focus: true, closeOnEscape: true })
   await update($, placed, () => Boolean(result.isPlaced))
   await refresh($)
@@ -228,6 +262,106 @@ async function confirmApproval($: EngineInterface, where: string) {
   // The gate refused this edit and Claude stopped: hand the turn back.
   $.prompt.submit({ text: `The developer approved the spec in ${where}. Retry the edit to ${path} and continue.` })
     .catch(error => $.ui.log('craft: could not resume Claude: ' + String(error).slice(0, 120)))
+}
+
+/**
+ * Run one craft-scenarios command, show a failure, and refresh. The mod never writes scenarios.md itself (INV-4).
+ * `drawn` is the row an edit was drawn from: when the list on disk no longer holds that text at that number, nothing runs.
+ * A second submit while one runs is ignored.
+ */
+async function editScenarios($: EngineInterface, args: string[], drawn?: { id: string; n: number; line: string }, generation = addCount) {
+  if (savingScenario || generation !== addCount) return
+  savingScenario = true
+  try {
+    if (drawn) {
+      // A submit from a field that is no longer the one being edited is a repeat.
+      if ((await read($, editScenario)) !== `${drawn.id}:${drawn.n}`) return
+      const fresh = await refresh($)
+      if (await read($, stale)) {
+        await update($, editScenario, () => '')
+        await setNotice($, 'Could not read the scenarios. Nothing changed; press r and try again.')
+        return
+      }
+      const row = fresh.scenarios?.by_criterion.find(item => item.id === drawn.id)
+      if (row?.lines[drawn.n - 1] !== drawn.line) {
+        await update($, editScenario, () => '')
+        await setNotice($, `${drawn.id} changed on disk. Check the list and edit again.`)
+        return
+      }
+    }
+    const result = await runCraft($, 'craft-scenarios', args)
+    if (result.code !== 0) await setNotice($, '✗ ' + result.out.slice(0, 160))
+    else if (args[0] === 'add') addCount += 1
+    await update($, editScenario, () => '')
+    await refresh($)
+  } finally {
+    savingScenario = false
+  }
+}
+
+/** Open one field on the Scenarios tab (`ID:n` or `ID:add`), closing every other box. */
+async function openField($: EngineInterface, field: string, text = '') {
+  await update($, deleteScenario, () => null)
+  await update($, confirmScenarios, () => '')
+  await update($, editOpened, () => text)
+  await update($, editScenario, () => field)
+}
+
+/** Move the Scenarios tab's selection by `by` rows within `rows`; any open field or confirm closes. */
+async function moveCursor($: EngineInterface, rows: readonly string[], from: string, by: number) {
+  const index = Math.max(0, Math.min(rows.length - 1, rows.indexOf(from) + by))
+  await update($, editScenario, () => '')
+  await update($, deleteScenario, () => null)
+  await update($, scenarioCursor, () => rows[index] ?? '')
+}
+
+async function askDelete($: EngineInterface, drawn: { id: string; n: number; line: string }) {
+  await update($, editScenario, () => '')
+  await update($, confirmScenarios, () => '')
+  await update($, deleteScenario, () => drawn)
+}
+
+/** Run remove for the scenario the confirm showed, only while that line on disk still holds the text shown (TSC-12). */
+async function removeScenario($: EngineInterface) {
+  const asked = await read($, deleteScenario)
+  if (!asked || savingScenario) return
+  savingScenario = true
+  try {
+    await update($, deleteScenario, () => null)
+    const fresh = await refresh($)
+    if (await read($, stale)) {
+      await setNotice($, 'Could not read the scenarios. Nothing changed; press r and try again.')
+      return
+    }
+    const row = fresh.scenarios?.by_criterion.find(item => item.id === asked.id)
+    if (row?.lines[asked.n - 1] !== asked.line) {
+      await setNotice($, `${asked.id} changed on disk. Check the list and delete again.`)
+      return
+    }
+    const result = await runCraft($, 'craft-scenarios', ['remove', asked.id, String(asked.n)])
+    if (result.code !== 0) await setNotice($, '✗ ' + result.out.slice(0, 160))
+    await refresh($)
+  } finally {
+    savingScenario = false
+  }
+}
+
+async function approveScenarios($: EngineInterface) {
+  const asked = await read($, confirmScenarios)
+  if (!asked) return
+  await update($, confirmScenarios, () => '')
+  const fresh = await refresh($)
+  if (await read($, stale)) {
+    await setNotice($, 'Could not read the scenarios. Nothing changed; press r and try again.')
+    return
+  }
+  if (asked !== (fresh.scenarios?.sha || '-')) {
+    await setNotice($, 'The scenarios changed after you opened the confirm. Read them again, then approve.')
+    return
+  }
+  const result = await runCraft($, 'craft-approve', ['--scenarios', '--note', 'Approved by the developer on the craft board'])
+  await setNotice($, result.code === 0 ? '✓ Scenarios approved. Tests may be written.' : '✗ ' + result.out.slice(0, 160))
+  await refresh($)
 }
 
 async function setFinding($: EngineInterface, id: string, state: string) {
@@ -302,6 +436,7 @@ function approvalBox(
   { Box, Text, Button }: Pick<ElementTable, 'Box' | 'Text' | 'Button'>,
   spec: NonNullable<Snapshot['spec']>,
   where: string,
+  cancelHotkey = 'n',
 ) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
@@ -310,7 +445,7 @@ function approvalBox(
       <Text dimColor>The spec gate opens, and Claude may write source and tests.</Text>
       <Box flexDirection="row" columnGap={2}>
         <Button key="spec-confirm" label="confirm" hotkey="y" variant="primary" onPress={() => confirmApproval($, where)} />
-        <Button key="spec-cancel" label="cancel" hotkey="n" plain dimColor onPress={() => update($, confirmApprove, () => false)} />
+        <Button key="spec-cancel" label="cancel" hotkey={cancelHotkey} plain dimColor onPress={() => update($, confirmApprove, () => false)} />
       </Box>
     </Box>
   )
@@ -533,7 +668,10 @@ export const register: Register = (on, options) => {
   // 🗂 The board. In a wide fullscreen terminal it docks beside the
   // transcript, so its header is the status at the top of the screen.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button } = $.ui.resolve(e)
+    const table = $.ui.resolve(e)
+    const { Box, Text, Button } = table
+    // Not every surface can type into a field; there the tab is read-only.
+    const Input = 'Input' in table ? table.Input : undefined
     const current = await read($, snapshot)
     const active = await read($, tab)
     const book = await read($, costs)
@@ -545,6 +683,21 @@ export const register: Register = (on, options) => {
     const spec = current?.spec
     const state = specState(spec?.state)
     const gateB = gateBText(current?.gate_b?.state)
+    const scenarios = scenariosGlyph(current?.scenarios?.state)
+    const editing = await read($, editScenario)
+    const opened = await read($, editOpened)
+    const cursor = await read($, scenarioCursor)
+    const deleting = await read($, deleteScenario)
+    const generation = addCount
+    const confirmingScenarios = await read($, confirmScenarios)
+    const offset = await read($, hscroll)
+    // How far the widest long text drawn must shift for its end to show (TSC-13).
+    let widest = 0
+    /** A row's long text after `prefix` fixed columns, shifted by the board's scroll. */
+    const fit = (text: string, prefix: number) => {
+      widest = Math.max(widest, overflow(text, width - prefix))
+      return shifted(text, offset)
+    }
     const route = current?.session?.route ?? ''
     const fiveHour = usage.rateLimits.find(limit => limit.kind === 'five_hour')
     const sevenDay = usage.rateLimits.find(limit => limit.kind === 'seven_day')
@@ -574,6 +727,8 @@ export const register: Register = (on, options) => {
           {gateStrip(Text, current?.gate_a?.items ?? [])}
           <Text dimColor>{'   B '}</Text>
           <Text color={gateB.color}>{`${gateB.glyph} ${current?.gate_b?.state ?? 'not run'}`}</Text>
+          <Text dimColor>{'   S '}</Text>
+          <Text color={scenarios.color}>{scenarios.glyph}</Text>
         </Text>
       </Box>
     )
@@ -581,7 +736,13 @@ export const register: Register = (on, options) => {
     const tabs = (
       <Box flexDirection="row" columnGap={1} flexWrap="wrap">
         {TABS.map(item => (
-          <Button key={'tab-' + item.id} label={item.label} hotkey={item.hotkey} plain onPress={() => update($, tab, () => item.id)}>
+          <Button key={'tab-' + item.id} label={item.label} hotkey={item.hotkey} plain onPress={async () => {
+            await update($, confirmScenarios, () => '')
+            await update($, editScenario, () => '')
+            await update($, deleteScenario, () => null)
+            await update($, hscroll, () => 0)
+            await update($, tab, () => item.id)
+          }}>
             {active === item.id ? <Text inverse bold>{` ${item.label} `}</Text> : <Text dimColor>{` ${item.label} `}</Text>}
           </Button>
         ))}
@@ -615,7 +776,7 @@ export const register: Register = (on, options) => {
                 <Text key={'crit-' + row.id} wrap="truncate-end">
                   <Text color={markColor(ok)}>{mark(ok) + ' '}</Text>
                   <Text bold>{row.id.padEnd(8)}</Text>
-                  {row.text.replace(/\s+/g, ' ').slice(0, Math.max(20, width - 14))}
+                  {fit(row.text.replace(/\s+/g, ' '), 10 + (row.developer ? 6 : 0))}
                   {row.developer && <Text color="suggestion">{' [you]'}</Text>}
                 </Text>
               )
@@ -652,7 +813,7 @@ export const register: Register = (on, options) => {
               ) : (
                 <Text dimColor>{'○ '}</Text>
               )}
-              {index === nextIndex ? <Text bold>{task.text}</Text> : <Text dimColor={task.done}>{task.text}</Text>}
+              {index === nextIndex ? <Text bold>{fit(task.text, 2)}</Text> : <Text dimColor={task.done}>{fit(task.text, 2)}</Text>}
             </Text>
           ))}
           {current.session?.checkpoint && <Text dimColor>{'\ncheckpoint: ' + current.session.checkpoint}</Text>}
@@ -676,7 +837,7 @@ export const register: Register = (on, options) => {
               <Text key={'gate-' + item.name} wrap="truncate-end">
                 {'  ' + item.name.padEnd(9)}
                 <Text color={markColor(item.ok)}>{mark(item.ok)}</Text>
-                <Text dimColor>{'  ' + summaryText(item.detail)}</Text>
+                <Text dimColor>{'  ' + fit(summaryText(item.detail), 14)}</Text>
               </Text>
             ))
           )}
@@ -716,7 +877,7 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{` ${finding.lens ?? ''} · ${finding.where ?? ''}  `}</Text>
                 <Text color={finding.state === 'confirmed' ? 'error' : finding.state === 'fixed' ? 'success' : 'warning'}>{finding.state ?? ''}</Text>
               </Text>
-              <Text wrap="truncate-end">{'         ' + (finding.title ?? '')}</Text>
+              <Text wrap="truncate-end">{'         ' + fit(finding.title ?? '', 9)}</Text>
               {isWaiting(finding) && (
                 <Box flexDirection="row" columnGap={2} marginLeft={9}>
                   <Button key={'confirm-' + finding.id} label="confirm" hotkey={finding.id === first ? 'c' : undefined} plain onPress={() => setFinding($, finding.id!, 'confirmed')} />
@@ -802,12 +963,12 @@ export const register: Register = (on, options) => {
                 <Text dimColor>{' · ' + String(last.source ?? '')}</Text>
               </Text>
               {Object.entries(items).map(([name, value]) => (
-                <Text key={'item-' + name} wrap="truncate-end">{`  ${name.padEnd(18)} ${Array.isArray(value) ? value.join(', ') : String(value)}`}</Text>
+                <Text key={'item-' + name} wrap="truncate-end">{`  ${name.padEnd(18)} ${fit(Array.isArray(value) ? value.join(', ') : String(value), 21)}`}</Text>
               ))}
               {Object.entries(votes).map(([member, answer]) => (
                 <Text key={'vote-' + member} wrap="truncate-end">
                   {'  ' + (deciders?.labels?.[member] ?? member).padEnd(18) + ' '}
-                  <Text dimColor>{voteText(answer)}</Text>
+                  <Text dimColor>{fit(voteText(answer), 21)}</Text>
                 </Text>
               ))}
             </Box>
@@ -819,6 +980,125 @@ export const register: Register = (on, options) => {
           <Box flexDirection="row" columnGap={2}>
             <Button key="decider-mode" label={`mode → ${deciders?.mode === 'council' ? 'first' : 'council'}`} hotkey="m" plain onPress={() => toggleMode($)} />
             <Button key="decider-ping" label="ping the chain" hotkey="p" plain dimColor onPress={() => pingDeciders($)} />
+          </Box>
+        </Box>
+      )
+    } else if (active === 'scenarios') {
+      const block = current.scenarios
+      const shown = scenariosGlyph(block?.state)
+      const rows = block?.by_criterion ?? []
+      const pending = block?.state !== 'approved'
+      const sha = block?.sha || '-'
+      const order = scenarioRows(rows)
+      const selected = order.includes(cursor) ? cursor : (order[0] ?? '')
+      const picked = rowParts(selected)
+      const pickedLine = rows.find(row => row.id === picked.id)?.lines[picked.n - 1]
+      const criterionText = new Map((spec?.criteria ?? []).map(row => [row.id, row.text.replace(/\s+/g, ' ')]))
+      const closeField = () => update($, editScenario, () => '')
+      body = (
+        <Box flexDirection="column">
+          {confirmingScenarios === sha && pending && (
+            <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+              <Text bold>Approve the scenarios?</Text>
+              <Text dimColor>{`${block?.count ?? 0} scenario(s) · ${rows.length} criteria · sha ${block?.sha ?? ''}`}</Text>
+              <Text dimColor>The test gate opens, and Claude may write test files.</Text>
+              <Box flexDirection="row" columnGap={2}>
+                <Button key="scen-confirm" label="confirm" hotkey="y" variant="primary" onPress={() => approveScenarios($)} />
+                <Button key="scen-cancel" label="cancel" hotkey="n" plain dimColor onPress={() => update($, confirmScenarios, () => '')} />
+              </Box>
+            </Box>
+          )}
+          <Text>
+            <Text bold>{'🧪 Scenarios  '}</Text>
+            <Text color={shown.color}>{`${shown.glyph} ${block?.state ?? 'none'}`}</Text>
+            <Text dimColor>{` · ${block?.count ?? 0} scenario(s)${block?.sha ? ' · sha ' + block.sha : ''}`}</Text>
+          </Text>
+          {block?.error && <Text color="error">{`scenarios.md could not be read: ${block.reason || 'unknown error'}`}</Text>}
+          {!block?.error && rows.length === 0 && <Text dimColor>No criteria yet. The spec needs acceptance criteria first.</Text>}
+          {!block?.error && rows.map(row => (
+            <Box key={'scen-' + row.id} flexDirection="column" marginTop={1}>
+              <Text wrap="truncate-end">
+                <Text bold>{row.id}</Text>
+                <Text dimColor>{'  ' + fit(criterionText.get(row.id) ?? '', row.id.length + 2)}</Text>
+              </Text>
+              {row.lines.length === 0 && (
+                <Button key={`scen-${row.id}-0`} plain onPress={() => moveCursor($, order, `${row.id}:0`, 0)}>
+                  <Text color={selected === `${row.id}:0` ? 'claude' : undefined} dimColor={selected !== `${row.id}:0`}>
+                    {(selected === `${row.id}:0` ? '▸ ' : '  ') + '○ no scenario yet'}
+                  </Text>
+                </Button>
+              )}
+              {row.lines.map((line, index) => {
+                const id = `${row.id}:${index + 1}`
+                const isSelected = id === selected
+                return Input && editing === id ? (
+                  <Input
+                    key={`scen-input-${row.id}-${index + 1}`}
+                    value={line}
+                    autoFocus
+                    submitLabel="save"
+                    onSubmit={(text: string) => {
+                      const clean = text.trim()
+                      return clean
+                        ? editScenarios($, ['set', row.id, String(index + 1), clean], { id: row.id, n: index + 1, line: opened })
+                        : closeField()
+                    }}
+                  />
+                ) : (
+                  <Button key={`scen-${row.id}-${index + 1}`} plain onPress={() => moveCursor($, order, id, 0)}>
+                    <Text wrap="truncate-end">
+                      <Text color={isSelected ? 'claude' : undefined} bold={isSelected} dimColor={!isSelected}>
+                        {`${isSelected ? '▸' : ' '} ${String(index + 1).padStart(2)}  `}
+                      </Text>
+                      {fit(line, 6)}
+                    </Text>
+                  </Button>
+                )
+              })}
+              {Input && editing === `${row.id}:add` && (
+                <Input
+                  key={'scen-add-' + row.id}
+                  placeholder="Given …, when …, then …"
+                  autoFocus
+                  submitLabel="add"
+                  onSubmit={(text: string) => {
+                    const clean = text.trim()
+                    return clean ? editScenarios($, ['add', row.id, clean], undefined, generation) : closeField()
+                  }}
+                />
+              )}
+              {deleting?.id === row.id && (
+                <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+                  <Text bold>{`Delete ${deleting.id} #${deleting.n}?`}</Text>
+                  <Text wrap="wrap">{deleting.line}</Text>
+                  <Box flexDirection="row" columnGap={2}>
+                    <Button key="scen-del-confirm" label="delete" hotkey="y" variant="primary" onPress={() => removeScenario($)} />
+                    <Button key="scen-del-cancel" label="cancel" hotkey="n" plain dimColor onPress={() => update($, deleteScenario, () => null)} />
+                  </Box>
+                </Box>
+              )}
+            </Box>
+          ))}
+          <Text>{' '}</Text>
+          {editing && <Text dimColor>Enter saves · an empty Enter closes the field</Text>}
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+            {order.length > 1 && <Button key="scen-down" label="down" hotkey="j" plain dimColor onPress={() => moveCursor($, order, selected, 1)} />}
+            {order.length > 1 && <Button key="scen-up" label="up" hotkey="k" plain dimColor onPress={() => moveCursor($, order, selected, -1)} />}
+            {Input && pickedLine !== undefined && (
+              <Button key="scen-edit" label="edit" hotkey="e" plain onPress={() => openField($, selected, pickedLine)} />
+            )}
+            {Input && picked.id && <Button key="scen-new" label="add" hotkey="i" plain onPress={() => openField($, picked.id + ':add')} />}
+            {pickedLine !== undefined && (
+              <Button key="scen-delete" label="delete…" hotkey="x" plain onPress={() => askDelete($, { id: picked.id, n: picked.n, line: pickedLine })} />
+            )}
+            {pending && !confirmingScenarios && (
+              <Button key="scen-approve" label="approve…" hotkey="a" plain onPress={async () => {
+                await update($, editScenario, () => '')
+                await update($, deleteScenario, () => null)
+                await update($, confirmScenarios, () => sha)
+              }} />
+            )}
+            <Button key="scen-read" label="read scenarios.md" hotkey="o" plain dimColor onPress={() => openViewer($, 'scenarios')} />
           </Box>
         </Box>
       )
@@ -835,7 +1115,13 @@ export const register: Register = (on, options) => {
         {message && <Text color="suggestion" wrap="wrap">{message}</Text>}
         <Box flexDirection="row" columnGap={2}>
           <Button key="board-refresh" label="refresh" hotkey="r" plain dimColor onPress={() => refresh($)} />
-          <Text dimColor>1–6 tabs · esc closes</Text>
+          {(widest > 0 || offset > 0) && (
+            <Button key="board-left" label="◀" hotkey="h" plain dimColor onPress={() => update($, hscroll, value => Math.max(0, value - SCROLL_STEP))} />
+          )}
+          {(widest > 0 || offset > 0) && (
+            <Button key="board-right" label="▶" hotkey="l" plain dimColor onPress={() => update($, hscroll, value => Math.min(widest, value + SCROLL_STEP))} />
+          )}
+          <Text dimColor>1–7 tabs · esc closes</Text>
         </Box>
       </Box>
     )
@@ -871,13 +1157,13 @@ export const register: Register = (on, options) => {
             <Button key="spec-approve" label="approve…" hotkey="a" plain onPress={() => update($, confirmApprove, () => true)} />
           )}
         </Box>
-        {waiting && asking && approvalBox($, { Box, Text, Button }, spec, 'the craft viewer')}
+        {waiting && asking && approvalBox($, { Box, Text, Button }, spec, 'the craft viewer', 'x')}
         {text === null ? (
           <Text dimColor>{`${file} does not exist for ${spec.name}.`}</Text>
         ) : (
           <Markdown text={docText(text, Math.max(30, e.props.bodyColumns ?? 80))} />
         )}
-        <Text dimColor>s d t l switch · esc closes</Text>
+        <Text dimColor>s d t l n switch · esc closes</Text>
       </Box>
     )
   })

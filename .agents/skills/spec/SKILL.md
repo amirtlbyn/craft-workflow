@@ -142,8 +142,34 @@ It records the SHA-256 of the active `spec.md` and opens the spec gate. It also
 appends the approval to `log.md`. The approval survives a new session, so work
 can resume after a usage-limit reset without a second approval.
 
-On the project route, run `/plan` next. On the task route, fill `tasks.md` with
-a short checklist and implement.
+Then follow Step 7. On the task route, fill `tasks.md` and implement only after
+the scenario approval. On the project route, run `/plan` after the scenario
+approval.
+
+## Step 7 — Draft the scenarios, present them, and stop
+
+The spec approval opens the gate for source files. Test files stay closed until
+the developer approves the test scenarios. A scenario is one concrete case of a
+criterion.
+
+1. Run `<plugin root>/bin/craft-scenarios draft`. It makes `scenarios.md` with
+   one `## <criterion ID>` section per criterion. It writes no scenario.
+2. Write one or more lines per criterion with `bin/craft-scenarios add <ID>
+   "<text>"`. Each line has the form `Given ..., when ..., then ...`. Cover the
+   failure story of each criterion, not only the happy path.
+3. Present the scenarios grouped by criterion. Then stop and ask the developer to
+   approve, add, change, or cut. Silence is not approval.
+4. After the developer says approve, and only then, run
+   `<plugin root>/bin/craft-approve --scenarios`. It records the SHA-256 of
+   `scenarios.md` and of `spec.md`.
+
+The developer can also edit the scenarios on the board's Scenarios tab (key 3).
+A change to `scenarios.md` or `spec.md` after the approval makes the scenarios
+stale. Approve them again.
+
+Until the scenarios are approved, the gate denies every test file. It still
+allows source code. Write the tests only after the approval, one per criterion.
+Do not write a test for a scenario the developer did not see.
 
 ---
 
@@ -168,7 +194,8 @@ silence.
 - It will not write code before the spec is approved.
 - It will not put state, progress, or test names into `spec.md`. They change,
   and every change to `spec.md` closes the gate.
-- It will not record an approval the developer did not give.
+- It will not record an approval the developer did not give. That covers the
+  scenario approval too.
 - It will not edit a `*.human.md` document.
 
 ## Related

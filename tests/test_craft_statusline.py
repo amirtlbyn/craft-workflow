@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 
+import pytest
+
 SCRIPT = pathlib.Path(__file__).resolve().parent.parent / "bin" / "craft-statusline"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 NOW = 1_800_000_000.0
@@ -224,3 +226,22 @@ def test_no_color_and_mono_print_no_escape_sequences():
     assert "\x1b" not in statusline.render(data, snapshot, mono, NOW, branch="main")
     coloured = statusline.parse_options(["--theme=craft"], {})
     assert "\x1b" in statusline.render(data, snapshot, coloured, NOW)
+
+
+@pytest.mark.parametrize(
+    "scenarios, expected",
+    [
+        ({"state": "approved"}, "S ✓"),
+        ({"state": "not approved"}, "S ●"),
+        ({"state": "stale"}, "S !"),
+        ({"state": "none"}, "S ○"),
+        (None, "S ○"),
+    ],
+)
+def test_scenarios_state_shows_as_s_glyph(scenarios, expected):
+    """TSC-10: Given each scenarios state, when rendered, then S shows ✓ approved, ● not approved, ! stale, ○ none or absent."""
+    snapshot = {"session": {"active": True, "route": "task"}, "scenarios": scenarios}
+
+    head = statusline.render(usage_data(), snapshot, plain_options(), NOW).splitlines()[0]
+
+    assert expected in head

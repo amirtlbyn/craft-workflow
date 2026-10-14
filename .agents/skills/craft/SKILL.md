@@ -87,7 +87,10 @@ No spec, no reviewer subagent, no files under `.claude/specs/`.
 ### task
 
 1. **Specify.** Load `spec` and follow it: `bin/craft-spec new --route task`,
-   write `spec.md`, present it, stop for approval, `bin/craft-approve`.
+   write `spec.md`, present it, stop for approval, `bin/craft-approve`. Then
+   draft the scenarios with `bin/craft-scenarios draft`, present them, stop, and
+   run `bin/craft-approve --scenarios` only on the developer's word. The gate
+   keeps test files closed until then.
 2. **Tasks.** Write a short checklist into `tasks.md`. Each line names a file and
    the criterion it serves.
 3. **Implement in this session.** You already hold the context, so do not spawn
@@ -113,16 +116,20 @@ No spec, no reviewer subagent, no files under `.claude/specs/`.
 
 ### project
 
-1. **Specify** as on `task`, with `--route project`.
-2. `/design-brainstorm` when the shape is unsettled. `/arch` for a second
+1. **Specify** as on `task`, with `--route project`: write `spec.md`, present
+   it, stop for approval, `bin/craft-approve`.
+2. **Scenarios.** Draft them with `bin/craft-scenarios draft`, present them,
+   stop, and run `bin/craft-approve --scenarios` only on the developer's word.
+   Do this before the plan.
+3. `/design-brainstorm` when the shape is unsettled. `/arch` for a second
    opinion.
-3. **Plan.** `/plan` — `planner` writes `design.md` and the sessions in
+4. **Plan.** `/plan` — `planner` writes `design.md` and the sessions in
    `tasks.md` from the approved spec.
-4. **Per session:** delegate to `coder` with the plugin root, the spec
+5. **Per session:** delegate to `coder` with the plugin root, the spec
    directory, and the session number. Do not paste the spec into the prompt.
    `coder` reads it. Then run Gate A yourself with `bin/craft-spec trace
    --session N`, review, adjudicate, fix, and append to `log.md`.
-5. `/finish` per merge request.
+6. `/finish` per merge request.
 
 ## Step 4 — Nothing is done until both gates are green
 

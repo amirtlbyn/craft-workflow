@@ -31,7 +31,7 @@ ZCode reads `hooks/hooks.json` only, through `.zcode-plugin/plugin.json`.
 
 | Script | Event | What it makes real |
 |---|---|---|
-| `scripts/gate_spec.py` | `PreToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit` | On `task` and `project`, no source or test file is written until the developer approves `spec.md` at its current SHA-256 |
+| `scripts/gate_spec.py` | `PreToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit` | On `task` and `project`, no source or test file is written until the developer approves `spec.md` at its current SHA-256, and no test file until `scenarios.md` is approved too |
 | `scripts/protect_human_owned.py` | `PreToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit` | A `*.human.md` document cannot be edited by an agent |
 | `scripts/verify_gates.py` | `Stop` | A claim of `done` or Gate A needs a green checkpoint, an approved spec, and a green trace |
 | `scripts/session_context.py` | `SessionStart` | A new session sees the active spec, its state, and its next task |
@@ -62,6 +62,18 @@ unless **all** of these hold:
 
 The denial names the state and the way through: `bin/craft-spec new`, the
 developer's approval, then `bin/craft-approve`.
+
+**The test-file check.** When the spec is approved, the hook checks one more
+thing for a test file. It finds test files with the test globs and
+extensions of the detected stack, the same `test_spec()` that `craft-spec trace`
+uses. It denies the write until `scenarios.md` is approved. The approval records
+the SHA-256 of `scenarios.md` and of `spec.md`. Both must match the files on
+disk.
+
+- A missing `scenarios.md` denies. The denial names the state, runs
+  `bin/craft-scenarios draft`, and lists each criterion without a scenario.
+- A `scenarios.md` that exists and cannot be read fails open: the write is allowed.
+- A source file needs the spec approval only.
 
 An approval is bound to the SHA-256 of `spec.md`, not to a Claude session. A new
 session, for example after a usage-limit reset, keeps the gate open. An edit to
@@ -113,14 +125,14 @@ State lives in the **host repository**, never in this plugin.
 ```
 <repo>/.claude/craft/
 ├── session.json     route, spec, session id, checkpoint command, checks with exit codes
-├── approval.json    the spec approvals the developer gave, each with a SHA-256
+├── approval.json    the spec and scenario approvals the developer gave, each with a SHA-256
 ├── findings.json    adjudicated review findings
 ├── logs/            full output of every bin/craft-check run
 └── archive/         sessions that were ended
 
 <repo>/.claude/specs/
 ├── ACTIVE           the active spec directory name
-└── <dir>/           spec.md, design.md, tasks.md, log.md
+└── <dir>/           spec.md, scenarios.md, design.md, tasks.md, log.md
 ```
 
 `scripts/craft_state.py` is the only module the hooks use to touch these files.
@@ -246,7 +258,8 @@ also matched against the file name alone, so `test_*.py` matches
 
 Two of the seven sets are read today: `human_owned` by `protect_human_owned`,
 and `tests` by `bin/craft-spec trace`, which uses it to find the test files. The
-spec gate needs no glob set: it gates every path outside `.claude/`. The other
+spec gate needs no glob set: it gates every path outside `.claude/`. Its
+test-file check uses the stack's test globs, as `trace` does. The other
 five are recorded for a route guard that is not wired yet.
 
 ---
@@ -255,6 +268,10 @@ five are recorded for a route guard that is not wired yet.
 
 - **The spec gate watches the file tools, not the shell.** A `Bash` command that
   writes a file is not gated. The old scenario gate had the same limit.
+- **The test-file check matches globs.** A test path the globs miss (a symlinked
+  directory, a case difference, a stack deeper than the detector looks) is not
+  gated. A source file that matches a test glob (`factories.py`, `ab_test.py`) is
+  gated. `.claude/craft/stack.json` is agent-writable and changes the globs.
 - **The hook cannot tell who approved.** `bin/craft-approve` records what the
   model runs. The `spec` skill forbids recording an approval the developer did
   not give, and `log.md` keeps every approval with its note.

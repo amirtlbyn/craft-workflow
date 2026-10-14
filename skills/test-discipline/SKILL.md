@@ -28,12 +28,13 @@ This skill shares a principle with `validation-discipline`:
 
 ---
 
-## Step 0 — The acceptance criteria are the scenarios
+## Step 0 — One test per criterion, built from its approved scenarios
 
 On the `task` and `project` routes, the tests to write are the acceptance
-criteria of the approved spec. There is no second list and no second approval.
-The `spec` skill proposes the criteria, with this skill's classes, and the
-developer approves them once.
+criteria of the approved spec. The `spec` skill proposes the criteria, with this
+skill's classes. The developer approves the criteria, then the scenarios of each
+criterion. Build each test from the approved scenarios of its criterion. The
+test exercises each scenario line.
 
 - Write **exactly one test per criterion**. Put the ID first in the test's
   docstring: `"""WDL-2: Given ..., when ..., then ...."""`. `bin/craft-spec

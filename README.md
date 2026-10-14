@@ -21,13 +21,20 @@ is `spec.md`: the problem, the non-goals, acceptance criteria in EARS form
 (`WHEN ..., THE ... SHALL ...`), the invariants, the contracts, and a risk tier.
 The developer approves it once. Each criterion gets exactly one test that names
 its ID, so `bin/craft-spec trace` can prove the mapping. The spec replaces the
-old separate test-scenario list: one approval, not two.
+old separate test-scenario list. Since 0.8.0 the developer also approves the
+concrete scenarios of each criterion before any test is written (see below).
 
 **A spec gate that is a hook, not a request.** Until the spec is approved, no
 source or test file can be written on `task` or `project`. The approval is
 bound to the SHA-256 of `spec.md`. Change the spec and the gate shuts again
 until the developer approves the delta. The approval is not bound to a Claude
 session, so work resumes after a usage-limit reset without a second approval.
+
+**A scenario gate for test files.** After the spec approval, source files are
+open. Test files stay closed until the developer approves `scenarios.md`: one
+`Given ..., when ..., then ...` line per scenario, grouped by criterion. Claude
+drafts them, presents them, and stops. The approval is bound to the SHA-256 of
+`scenarios.md` and of `spec.md`.
 
 **Gates derived from the spec.** Nothing is `done` because the code is written.
 **Gate A — spec verified**: every criterion has its test, the checkpoint ran
@@ -145,7 +152,10 @@ craft   Route: task — new business rule, one merge request, no design question
         ... writes spec.md: 5 criteria (WDL-1..5), 4 non-goals, Risk: high
         ... shows the criteria table and stops
 you     approve, and add: a cancelled withdrawal does not count
-craft   adds WDL-6 [developer], bin/craft-approve  → the gate opens
+craft   adds WDL-6 [developer], bin/craft-approve  → source files are open
+        bin/craft-scenarios draft, adds 1+ scenario per criterion, shows them
+you     approve
+craft   bin/craft-approve --scenarios              → test files are open
         ... implements, one test per criterion, "WDL-3: ..." in each docstring
         bin/craft-check -- docker compose exec web pytest apps/wallet -q
         bin/craft-spec trace                        → 6 of 6 criteria have a test
@@ -159,6 +169,9 @@ The commands behind it:
 ```
 bin/craft-spec new|status|trace|close   create, inspect, trace, and close a spec
 bin/craft-approve                        record the developer's approval of spec.md
+bin/craft-approve --scenarios            record the approval of scenarios.md
+bin/craft-scenarios status|draft         the scenarios state, make scenarios.md from the spec
+bin/craft-scenarios add|set|remove       add, replace, or delete one scenario of a criterion
 bin/craft-check -- <command>             run a check, record its exit code, print a summary
 bin/craft-std --list | <file> <section>  read one section of a standard
 bin/craft-jev on|off|status|test|decide  the optional Jev decision layer
@@ -181,6 +194,7 @@ Run the commands from the host repository.
 └── 2026-09-23-daily-withdrawal-limit-tier/
     ├── spec.md                  WHAT and WHY. Approved. Stable
     ├── design.md                HOW. project route only
+    ├── scenarios.md             Given/When/Then lines per criterion. Approved second
     ├── tasks.md                 the checklist, its state, the checkpoint
     └── log.md                   append-only: approvals, gates, reviews, deltas
 ```
@@ -192,6 +206,15 @@ When the code shows the spec is wrong, the workflow stops and proposes a **spec
 delta**: the rows to add, change, or remove. After the developer approves it,
 `spec.md` changes, `log.md` records why, and `bin/craft-approve` opens the gate
 again. The spec stays true for the life of the change.
+
+`bin/craft-scenarios draft` makes `scenarios.md` with one `## <criterion ID>`
+section per criterion. It keeps every line already there. It moves the section
+of a removed criterion under `## Retired`. It writes no scenario: Claude adds
+them with `add`, and the developer can change them with `set` and `remove`.
+`bin/craft-approve --scenarios` refuses while a criterion has no scenario.
+Changing `scenarios.md` or `spec.md` afterward makes the scenarios `stale`, and
+the gate closes test files again. `skills/spec/templates/scenarios.md` shows the
+format.
 
 ---
 
@@ -218,7 +241,7 @@ What Claude Code looks like with it:
 🐹 go  🔴 risk high  🧵 ready  🧠 council
 📋 ✅ approved  🅰️ 🔗❌ 🧪✅ 🏁✅ 🎨❌  🅱️ ⏳ in review
 💰 $1.84  ⏱ 5h ████░░░░░░ 42%  🧠 ctx 61%
-1 📋 Spec  2 ✅ Tasks  3 🚦 Gates  4 🔍 Review  5 💰 Cost  6 🧠 Deciders
+1 📋 Spec  2 ✅ Tasks  3 🧪 Scenarios  4 🚦 Gates  5 🔍 Review  6 💰 Cost  7 🧠 Deciders
 ```
 
 - **Status at the top.** In a wide fullscreen terminal the board docks beside
@@ -233,11 +256,20 @@ What Claude Code looks like with it:
   source asks you: 👀 open the spec, ✅ approve it, or 🚫 keep it blocked.
 - **Findings you can act on.** The Review tab confirms or rejects a finding
   with one key, and Gate B follows.
+- **🧪 The Scenarios tab (key 3).** It lists every criterion with its text and
+  its numbered scenarios, and marks a criterion that has none. `j` and `k` move
+  the selection (or press a row). `e` edits the selected scenario, `i` adds one
+  to its criterion, and `x` deletes it after a confirm. Enter saves; an empty
+  Enter closes the field. `a` approves the scenarios, after a confirm. The tab runs
+  `bin/craft-scenarios` and `bin/craft-approve --scenarios`. It decides nothing.
 - **📄 A document viewer.** `o` on the Spec or Tasks tab opens the spec's
   files in a pane of their own: `s` spec.md, `d` design.md, `t` tasks.md,
-  `l` log.md. Template comments are removed, and a table too wide for the pane
-  is drawn as one block per row. `a` approves, after the same confirm as the
-  board. Esc closes it.
+  `l` log.md, `n` scenarios.md. Template comments are removed, and a table too
+  wide for the pane is drawn as one block per row. `a` approves, after the same
+  confirm as the board. Esc closes it.
+- **◀ ▶ Sideways scroll.** When a row's text is wider than the board, `h` and
+  `l` shift the long text of every row on the tab. The IDs and glyphs stay in
+  place. A new tab starts at the left edge.
 
 ### The status line
 
@@ -258,6 +290,7 @@ The mod cannot replace Claude Code's status line: that line is the
 💰 $1.23 · $2.11/h · 35m (api 12m) · +120 −8 · in 1.2M out 45k · cache 93%
 ```
 
+The `S` glyph shows the scenarios state next to `A` and `B`.
 The `┃` in a usage bar is the pace: where usage would be if it grew evenly over
 the window. `⚠ full in 40m` shows when the current rate reaches 100% before
 the window resets. `--detail` adds the third line.
@@ -565,7 +598,7 @@ Most of this workflow is prose, and prose can drift. Four hooks in
 
 | Hook | Event | What it makes real |
 |---|---|---|
-| `gate_spec.py` | `PreToolUse` on Write/Edit/MultiEdit/NotebookEdit | On `task` and `project`, no source or test file is written until `spec.md` is approved at its current SHA-256 |
+| `gate_spec.py` | `PreToolUse` on Write/Edit/MultiEdit/NotebookEdit | On `task` and `project`, no source or test file is written until `spec.md` is approved at its current SHA-256. No test file is written until `scenarios.md` is approved too |
 | `protect_human_owned.py` | `PreToolUse` on Write/Edit/MultiEdit/NotebookEdit | A `*.human.md` document cannot be edited by an agent |
 | `verify_gates.py` | `Stop` | A claim of `done` or Gate A needs a green checkpoint, an approved spec, and a green `craft-spec trace` |
 | `session_context.py` | `SessionStart` | A new session sees the active spec, its state, and the next task, in a few lines |

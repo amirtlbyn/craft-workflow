@@ -19,6 +19,7 @@ type World = {
   clock: MockClock
   docs: Record<string, string>
   opened: Record<string, unknown>[]
+  hold: Promise<void> | null
 }
 
 function snapshotFor(specState: string): Record<string, unknown> {
@@ -54,6 +55,16 @@ function snapshotFor(specState: string): Record<string, unknown> {
       next_task: 'T2 — cancelled withdrawals',
       traced: 1,
     },
+    scenarios: {
+      state: 'not approved',
+      sha: 'a1b2c3d4e5f6',
+      count: 1,
+      by_criterion: [
+        { id: 'WDL-1', lines: ['Given a balance over the limit, when withdrawing, then it is refused'] },
+        { id: 'WDL-2', lines: [] },
+      ],
+      missing: ['WDL-2'],
+    },
     checks: {},
     gate_a: {
       items: [
@@ -82,8 +93,9 @@ function world(on: On, specState = 'approved'): World {
     submitted: [],
     failUi: false,
     clock: mock.clock(on),
-    docs: { 'spec.md': '# SPEC: Daily withdrawal limit\n\n<!-- template note -->\nThe limit text.', 'tasks.md': '# TASKS\n\n- [x] T1', 'log.md': '# LOG\n\n## spec approved' },
+    docs: { 'spec.md': '# SPEC: Daily withdrawal limit\n\n<!-- template note -->\nThe limit text.', 'tasks.md': '# TASKS\n\n- [x] T1', 'log.md': '# LOG\n\n## spec approved', 'scenarios.md': '# SCENARIOS\n\n## WDL-1\n- Given a balance over the limit, when withdrawing, then it is refused' },
     opened: [],
+    hold: null,
   }
   on('session.start', () => ({ cwd: REPO }))
   on('session.cwd', () => ({ value: REPO }))
@@ -102,10 +114,11 @@ function world(on: On, specState = 'approved'): World {
     return { value: PRICES }
   })
   const PRICES = JSON.stringify({ families: [{ family: 'opus', match: ['opus'], input: 5, output: 25, cache_write: 6.25, cache_read: 0.5 }, { family: 'sonnet', match: ['sonnet'], input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 }, { family: 'other', match: [''], input: 3, output: 15, cache_write: 3.75, cache_read: 0.3 }] })
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     const argv = [...(e as { argv: string[] }).argv]
     state.argv.push(argv)
     const script = argv[1] ?? ''
+    if (script.endsWith('craft-scenarios') && state.hold) await state.hold
     if (script.endsWith('craft-ui-state')) {
       const stdout = JSON.stringify(state.failUi ? { version: 1, error: 'ValueError: boom' } : state.snapshot)
       return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -550,4 +563,213 @@ test('CSL-12: a table wider than the pane becomes one block per row, and a table
   expect(text).not.toContain('| EXP-3 |')
   expect(text).toContain('| Key | Value |\n|---|---|\n| a | b |')
   await viewer.unmount()
+})
+
+const argvOf = (state: World, script: string) => state.argv.filter(argv => String(argv[1]).endsWith(script)).map(argv => argv.slice(2))
+
+const scenariosOf = (state: World) => state.snapshot.scenarios as Record<string, unknown> & { by_criterion: { id: string; lines: string[] }[] }
+
+test('TSC-7: the Scenarios tab is the third, lists each criterion with its text and scenarios, marks one with none, and shows the state; the header shows S', async ($, on) => {
+  const state = world(on, 'not approved')
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  const hotkeys = await Promise.all(['spec', 'tasks', 'scenarios', 'gates'].map(async id => (await ui.find({ key: 'tab-' + id }))?.props.hotkey))
+  expect(hotkeys).toEqual(['1', '2', '3', '4'])
+  expect(await ui.find({ type: 'Text', text: /^\s*S\s*$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^●$/ })).toBeDefined()
+  await ui.press({ key: 'tab-scenarios' })
+  expect(await ui.find({ type: 'Text', text: /● not approved/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 scenario\(s\) · sha a1b2c3d4e5f6/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^WDL-1$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^WDL-2$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /WHEN over the limit, THE service SHALL refuse\./ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /A cancelled withdrawal SHALL NOT count/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Given a balance over the limit/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /no scenario yet/ })).toBeDefined()
+  scenariosOf(state).state = 'approved'
+  await ui.press({ key: 'board-refresh' })
+  expect(await ui.find({ type: 'Text', text: /^✓ approved$/ })).toBeDefined()
+  expect(await ui.find({ key: 'scen-approve' })).toBeUndefined()
+  scenariosOf(state).state = 'none'
+  scenariosOf(state).error = true
+  scenariosOf(state).reason = 'UnicodeDecodeError: bad byte'
+  await ui.press({ key: 'board-refresh' })
+  expect(await ui.find({ type: 'Text', text: /scenarios\.md could not be read: UnicodeDecodeError: bad byte/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /no scenario yet/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('TSC-8: one selected row moves with j and k; e runs set, i runs add for the selected criterion, and an empty Enter closes the field and runs nothing', async ($, on) => {
+  const state = world(on)
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  await ui.press({ key: 'tab-scenarios' })
+  const keys = await Promise.all(['scen-down', 'scen-up', 'scen-edit', 'scen-new'].map(async key => (await ui.find({ key }))?.props.hotkey))
+  expect(keys).toEqual(['j', 'k', 'e', 'i'])
+  // No field until e or i, and the selection moves down one row and back.
+  expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /▸\s+1\s+/ })).toBeDefined()
+  await ui.press({ key: 'scen-down' })
+  expect(await ui.find({ type: 'Text', text: /▸ ○ no scenario yet/ })).toBeDefined()
+  expect(await ui.find({ key: 'scen-edit' })).toBeUndefined()
+  await ui.press({ key: 'scen-up' })
+  expect(await ui.find({ type: 'Text', text: /▸\s+1\s+/ })).toBeDefined()
+  expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  // e edits the selected scenario.
+  await ui.press({ key: 'scen-edit' })
+  expect((await ui.find({ key: 'scen-input-WDL-1-1' }))?.props.value).toBe('Given a balance over the limit, when withdrawing, then it is refused')
+  await ui.input({ key: 'scen-input-WDL-1-1', text: 'Given x, when y, then z' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-scenarios')).toEqual([['set', 'WDL-1', '1', 'Given x, when y, then z']])
+  // An empty Enter closes the field and runs nothing.
+  await ui.press({ key: 'scen-edit' })
+  await ui.input({ key: 'scen-input-WDL-1-1', text: '   ' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-scenarios')).toHaveLength(1)
+  expect(await ui.find({ type: 'Input' })).toBeUndefined()
+  // The line changed on disk after the field opened: nothing runs.
+  await ui.press({ key: 'scen-edit' })
+  scenariosOf(state).by_criterion[0]!.lines = ['A different line written by Claude']
+  await ui.press({ key: 'board-refresh' })
+  await ui.input({ key: 'scen-input-WDL-1-1', text: 'Given q, when r, then s' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-scenarios')).toHaveLength(1)
+  expect(await ui.find({ type: 'Text', text: /WDL-1 changed on disk\. Check the list and edit again\./ })).toBeDefined()
+  // i adds to the selected row's criterion; two submits before the first resolves run one command.
+  await ui.press({ key: 'scen-down' })
+  await ui.press({ key: 'scen-new' })
+  expect(await ui.find({ key: 'scen-add-WDL-1' })).toBeUndefined()
+  let release = () => {}
+  state.hold = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const twice = Promise.all([
+    ui.input({ key: 'scen-add-WDL-2', text: 'Given a, when b, then c' }),
+    ui.input({ key: 'scen-add-WDL-2', text: 'Given a, when b, then c' }),
+  ])
+  release()
+  await twice
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-scenarios')).toEqual([
+    ['set', 'WDL-1', '1', 'Given x, when y, then z'],
+    ['add', 'WDL-2', 'Given a, when b, then c'],
+  ])
+  expect(await ui.find({ key: 'scen-add-WDL-2' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('TSC-9: approve shows the counts and sha, cancel runs nothing, and only confirm runs craft-approve --scenarios', async ($, on) => {
+  const state = world(on)
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  await ui.press({ key: 'tab-scenarios' })
+  await ui.press({ key: 'scen-approve' })
+  expect(await ui.find({ type: 'Text', text: /Approve the scenarios\?/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /1 scenario\(s\) · 2 criteria · sha a1b2c3d4e5f6/ })).toBeDefined()
+  expect(argvOf(state, 'craft-approve')).toEqual([])
+  await ui.press({ key: 'scen-cancel' })
+  expect(argvOf(state, 'craft-approve')).toEqual([])
+  expect(await ui.find({ key: 'scen-confirm' })).toBeUndefined()
+  // The scenarios change while the confirm is open: the box closes, and confirm cannot approve.
+  await ui.press({ key: 'scen-approve' })
+  scenariosOf(state).sha = 'ffffffffffff'
+  await ui.press({ key: 'scen-confirm' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-approve')).toEqual([])
+  expect(await ui.find({ key: 'scen-confirm' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /scenarios changed after you opened the confirm/ })).toBeDefined()
+  // A stale approval offers approve again.
+  scenariosOf(state).state = 'stale'
+  await ui.press({ key: 'board-refresh' })
+  await ui.press({ key: 'scen-approve' })
+  expect(await ui.find({ key: 'scen-confirm' })).toBeDefined()
+  await ui.press({ key: 'scen-confirm' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-approve')).toEqual([['--scenarios', '--note', 'Approved by the developer on the craft board']])
+  await ui.unmount()
+})
+
+test('TSC-11: n in the viewer shows scenarios.md, and the spec confirm there leaves n to it', async ($, on) => {
+  world(on, 'not approved')
+  await start($)
+  const viewer = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-doc', props: VIEWER_PROPS as never })
+  expect((await viewer.find({ key: 'doc-scenarios' }))?.props.hotkey).toBe('n')
+  await viewer.press({ key: 'doc-scenarios' })
+  expect(await viewerText(viewer)).toContain('## WDL-1')
+  expect(await viewerText(viewer)).toContain('then it is refused')
+  await viewer.press({ key: 'spec-approve' })
+  expect((await viewer.find({ key: 'doc-scenarios' }))?.props.hotkey).toBe('n')
+  expect((await viewer.find({ key: 'spec-cancel' }))?.props.hotkey).toBe('x')
+  await viewer.unmount()
+})
+
+test('TSC-12: x shows the scenario with a confirm; cancel runs nothing, confirm runs remove, and a line changed on disk is not removed', async ($, on) => {
+  const state = world(on)
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  await ui.press({ key: 'tab-scenarios' })
+  expect((await ui.find({ key: 'scen-delete' }))?.props.hotkey).toBe('x')
+  await ui.press({ key: 'scen-delete' })
+  expect(await ui.find({ type: 'Text', text: /^Delete WDL-1 #1\?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Given a balance over the limit, when withdrawing, then it is refused$/ })).toBeDefined()
+  expect((await ui.find({ key: 'scen-del-confirm' }))?.props.hotkey).toBe('y')
+  expect((await ui.find({ key: 'scen-del-cancel' }))?.props.hotkey).toBe('n')
+  await ui.press({ key: 'scen-del-cancel' })
+  expect(argvOf(state, 'craft-scenarios')).toEqual([])
+  expect(await ui.find({ key: 'scen-del-confirm' })).toBeUndefined()
+  await ui.press({ key: 'scen-delete' })
+  await ui.press({ key: 'scen-del-confirm' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-scenarios')).toEqual([['remove', 'WDL-1', '1']])
+  // The line changed on disk while the confirm was open: nothing is removed.
+  await ui.press({ key: 'scen-delete' })
+  scenariosOf(state).by_criterion[0]!.lines = ['A different line written by Claude']
+  await ui.press({ key: 'scen-del-confirm' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-scenarios')).toEqual([['remove', 'WDL-1', '1']])
+  expect(await ui.find({ type: 'Text', text: /WDL-1 changed on disk\. Check the list and delete again\./ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('TSC-13: l shifts long row text behind … with the ID in place, stops at its end, h and a tab switch go back, and nothing to shift shows no buttons', async ($, on) => {
+  const state = world(on)
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  // Every row fits in 70 columns: no buttons.
+  expect(await ui.find({ key: 'board-left' })).toBeUndefined()
+  expect(await ui.find({ key: 'board-right' })).toBeUndefined()
+  // 100 characters after 10 fixed columns in a 70-column body: it shifts at most 100 - 60 + 1 = 41.
+  const long = 'WHEN ' + 'abcdefghij'.repeat(9) + 'THE END.'
+  const spec = state.snapshot.spec as { criteria: { text: string }[] }
+  spec.criteria[0]!.text = long.slice(0, 100)
+  const text = spec.criteria[0]!.text
+  await ui.press({ key: 'board-refresh' })
+  expect((await ui.find({ key: 'board-left' }))?.props.hotkey).toBe('h')
+  expect((await ui.find({ key: 'board-right' }))?.props.hotkey).toBe('l')
+  // The WDL-1 row ends with its text shifted by `shift`, behind its fixed ID.
+  const row = async (shift: number) => {
+    const shown = (shift ? '…' + text.slice(shift) : text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return (await ui.find({ type: 'Text', text: new RegExp('WDL-1\\s+' + shown + '$') })) !== undefined
+  }
+  expect(await row(0)).toBe(true)
+  await ui.press({ key: 'board-right' })
+  expect(await row(20)).toBe(true)
+  expect(await row(0)).toBe(false)
+  await ui.press({ key: 'board-right' })
+  await ui.press({ key: 'board-right' })
+  expect(await row(41)).toBe(true)
+  await ui.press({ key: 'board-right' })
+  expect(await row(41)).toBe(true)
+  await ui.press({ key: 'board-left' })
+  expect(await row(21)).toBe(true)
+  await ui.press({ key: 'board-left' })
+  await ui.press({ key: 'board-left' })
+  expect(await row(0)).toBe(true)
+  // A tab switch starts the new tab, and the next visit, at the left edge.
+  await ui.press({ key: 'board-right' })
+  expect(await row(20)).toBe(true)
+  await ui.press({ key: 'tab-tasks' })
+  await ui.press({ key: 'tab-spec' })
+  expect(await row(0)).toBe(true)
+  await ui.unmount()
 })

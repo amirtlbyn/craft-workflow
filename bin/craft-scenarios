@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""craft-scenarios - draft and edit the test scenarios of the active spec.
+
+scenarios.md sits beside spec.md. It holds one "## <criterion ID>" section per
+criterion, and one "- Given ..., when ..., then ..." line per scenario. The
+developer approves it with bin/craft-approve --scenarios. Until then, and after
+any later change to it or to spec.md, the gate keeps test files closed.
+
+Usage:
+    bin/craft-scenarios status [--json]
+    bin/craft-scenarios draft
+    bin/craft-scenarios add <ID> <text>
+    bin/craft-scenarios set <ID> <n> <text>
+    bin/craft-scenarios remove <ID> <n>
+
+Commands:
+    status   The scenarios state, the count, and each criterion with none.
+    draft    Make scenarios.md hold one section per criterion of spec.md, in spec
+             order. It keeps every scenario and every other line already there,
+             adds an empty section for a criterion with none, and moves a section
+             whose ID left the spec under "## Retired". It writes no scenario.
+    add      Append one scenario to the criterion <ID>.
+    set      Replace scenario number <n> (counted from 1) of <ID>.
+    remove   Delete scenario number <n> of <ID>.
+
+Options:
+    --json       With status: print JSON.
+    --cwd PATH   Work against the repository that holds PATH.
+
+Exit codes:
+    0   done
+    1   the file could not be written, or the spec is not approved
+    2   the arguments are wrong, or no spec is active
+"""
+
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "scripts"))
+
+import craft_state  # noqa: E402
+
+
+def argument(argv, flag, default=None):
+    """Return the value after flag in argv, or default."""
+    if flag in argv:
+        index = argv.index(flag)
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return default
+
+
+def positional(argv):
+    """Return argv without --cwd and its value, and without --json."""
+    result = []
+    skip = False
+    for item in argv:
+        if skip:
+            skip = False
+        elif item == "--cwd":
+            skip = True
+        elif item != "--json":
+            result.append(item)
+    return result
+
+
+def load(cwd):
+    """Return (directory, spec ids, preamble, sections, retired), or None."""
+    directory = craft_state.active_spec_dir(cwd)
+    if directory is None or not (directory / "spec.md").is_file():
+        return None
+    ids = craft_state.criterion_ids((directory / "spec.md").read_text(encoding="utf-8"))
+    try:
+        text = (directory / "scenarios.md").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        text = ""
+    preamble, sections, retired = craft_state.parse_scenarios(text)
+    return (directory, ids, preamble, sections, retired)
+
+
+def save(directory, ids, preamble, sections, retired):
+    """Write scenarios.md in spec order. Return the exit code."""
+    sections, retired = craft_state.arrange_scenarios(ids, sections, retired)
+    if not craft_state.write_scenarios(directory / "scenarios.md", sections, retired, preamble):
+        sys.stderr.write("Could not write %s\n" % (directory / "scenarios.md"))
+        return 1
+    return 0
+
+
+def command_status(argv, cwd):
+    """Print the scenarios state. Return the exit code."""
+    state, detail = craft_state.scenarios_state(cwd)
+    if state == "none" and not detail["spec"]:
+        sys.stderr.write("There is no active spec.\n")
+        return 2
+    directory = craft_state.active_spec_dir(cwd)
+    found = craft_state.read_scenarios(detail["path"])
+    ids = craft_state.criterion_ids((directory / "spec.md").read_text(encoding="utf-8"))
+    by_criterion = {name: found.get(name, []) for name in ids}
+    if "--json" in argv:
+        result = dict(detail, state=state, by_criterion=by_criterion)
+        print(json.dumps(result, indent=2))
+        return 0
+    print("scenarios   %s — %d scenario(s), %d criteria without one" % (state, detail["count"], len(detail["missing"])))
+    for name, texts in by_criterion.items():
+        print("  %-10s %d" % (name, len(texts)))
+    if detail["missing"]:
+        print("missing     %s" % ", ".join(detail["missing"]))
+    return 0
+
+
+def command_edit(words, cwd):
+    """Run draft, add, set, or remove. words is argv without options."""
+    name = words[0]
+    arity = {"draft": 1, "add": 3, "set": 4, "remove": 3}
+    if name not in arity or len(words) < arity[name] or (name in ("draft", "remove") and len(words) > arity[name]):
+        sys.stderr.write("Usage: see bin/craft-scenarios --help\n")
+        return 2
+    try:
+        loaded = load(cwd)
+    except (OSError, ValueError) as error:
+        sys.stderr.write("Could not read the spec files: %s\n" % error)
+        return 1
+    if loaded is None:
+        sys.stderr.write("There is no active spec.\n")
+        return 2
+    directory, ids, preamble, sections, retired = loaded
+    state, _detail = craft_state.spec_state(cwd)
+    if state != "approved":
+        sys.stderr.write("The spec is %s. Get it approved before the scenarios.\n" % state)
+        return 1
+    if name != "draft":
+        criterion = words[1]
+        if criterion not in ids:
+            sys.stderr.write("%s is not a criterion of spec.md. Criteria: %s\n" % (criterion, ", ".join(ids)))
+            return 2
+        body = sections.setdefault(criterion, [])
+        raw = " ".join(words[arity[name] - 1 :]) if name != "remove" else ""
+        if raw != " ".join(raw.splitlines()):
+            sys.stderr.write("A scenario is one line. The text holds a line break.\n")
+            return 2
+        text = raw.strip()
+        if name != "remove" and not text:
+            sys.stderr.write("The scenario text is empty. Use remove to delete one.\n")
+            return 2
+        if name == "add":
+            body.append("- " + text)
+        else:
+            try:
+                number = int(words[2])
+            except ValueError:
+                number = 0
+            positions = [index for index, line in enumerate(body) if craft_state.SCENARIO_LINE.match(line)]
+            if not 1 <= number <= len(positions):
+                sys.stderr.write(
+                    "%s has %d scenario(s); there is no number %s.\n" % (criterion, len(positions), words[2])
+                )
+                return 2
+            if name == "set":
+                body[positions[number - 1]] = "- " + text
+            else:
+                del body[positions[number - 1]]
+    return save(directory, ids, preamble, sections, retired)
+
+
+def main(argv):
+    """Run one command. Return the exit code."""
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    cwd = argument(argv, "--cwd")
+    words = positional(argv)
+    if not words:
+        sys.stderr.write("Usage: see bin/craft-scenarios --help\n")
+        return 2
+    if words[0] == "status":
+        return command_status(argv, cwd)
+    return command_edit(words, cwd)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

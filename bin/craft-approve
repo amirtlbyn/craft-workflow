@@ -11,6 +11,7 @@ fact, so record a fact that is true.
 Usage:
     bin/craft-approve [--note "TEXT"]
     bin/craft-approve --spec <directory name>
+    bin/craft-approve --scenarios [--note "TEXT"]
     bin/craft-approve --list
 
 Options:
@@ -18,12 +19,15 @@ Options:
                   active one. It also becomes the active spec.
     --note TEXT   A free-text note stored with the approval, for example the
                   developer's words.
+    --scenarios   Approve scenarios.md of the active spec instead of spec.md. It
+                  refuses, and records nothing, while a criterion has no
+                  scenario or the spec is not approved.
     --list        Show the approvals of the active spec, and stop.
     --cwd PATH    Work against the repository that holds PATH.
 
 Exit codes:
     0   the approval was recorded, or --list printed
-    1   the approval could not be written
+    1   the approval could not be written, or --scenarios refused
     2   the arguments are wrong, or there is no spec to approve
 """
 
@@ -45,11 +49,69 @@ def argument(argv, flag, default=None):
     return default
 
 
+def append_log(directory, heading, digest, note):
+    """Add one entry to the spec's log.md. A failure is ignored."""
+    try:
+        with open(directory / "log.md", "a", encoding="utf-8") as handle:
+            handle.write(
+                "\n## %s — %s\nsha256 %s%s\n"
+                % (
+                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                    heading,
+                    digest[:12],
+                    (" · note: %s" % note) if note else "",
+                )
+            )
+    except OSError:
+        pass
+
+
+def approve_scenarios(directory, note, cwd):
+    """Record the approval of scenarios.md. Refuse, and record nothing, when it is not complete."""
+    spec_state, _spec_detail = craft_state.spec_state(cwd)
+    if spec_state != "approved":
+        sys.stderr.write("The spec is %s. Approve the spec before the scenarios.\n" % spec_state)
+        return 1
+    state, detail = craft_state.scenarios_state(cwd)
+    if state == "none" and not detail["sha256"]:
+        sys.stderr.write("There is no scenarios.md. Run: bin/craft-scenarios draft\n")
+        return 1
+    if not craft_state.criterion_ids((directory / "spec.md").read_text(encoding="utf-8")):
+        sys.stderr.write("Refused. spec.md has no criterion ID in its Acceptance criteria table.\n")
+        return 1
+    if detail["missing"]:
+        sys.stderr.write("Refused. These criteria have no scenario:\n")
+        for name in detail["missing"]:
+            sys.stderr.write("  %s\n" % name)
+        return 1
+    if detail["count"] == 0:
+        sys.stderr.write("Refused. scenarios.md holds no scenario.\n")
+        return 1
+    if state == "approved":
+        print("Scenarios already approved at this exact text (%s). Nothing to record." % detail["sha256"][:12])
+        return 0
+    if not craft_state.add_scenarios_approval(
+        directory.name, detail["sha256"], detail["spec_sha256"], detail["count"], note=note, cwd=cwd
+    ):
+        sys.stderr.write("Could not write %s\n" % craft_state.state_path("approval.json", cwd))
+        return 1
+    heading = "scenarios approved" if state == "not approved" else "scenarios re-approved"
+    append_log(directory, heading, detail["sha256"], note)
+    print("Scenarios approved. Test files are open for %s." % directory.name)
+    print("  sha256  %s" % detail["sha256"][:12])
+    print("  count   %d scenario(s)" % detail["count"])
+    return 0
+
+
 def main(argv):
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__.strip())
         return 0
     cwd = argument(argv, "--cwd")
+
+    if "--scenarios" in argv and "--spec" in argv:
+        sys.stderr.write("--scenarios works on the active spec. Do not combine it with --spec.\n")
+        return 2
 
     chosen = argument(argv, "--spec")
     if chosen:
@@ -86,6 +148,9 @@ def main(argv):
             )
         return 0
 
+    if "--scenarios" in argv:
+        return approve_scenarios(directory, argument(argv, "--note", "") or "", cwd)
+
     digest = craft_state.file_digest(directory / "spec.md")
     if not digest:
         sys.stderr.write("Could not read %s\n" % (directory / "spec.md"))
@@ -101,19 +166,7 @@ def main(argv):
         return 1
 
     heading = "spec approved" if state == "not approved" else "spec delta approved"
-    try:
-        with open(directory / "log.md", "a", encoding="utf-8") as handle:
-            handle.write(
-                "\n## %s — %s\nsha256 %s%s\n"
-                % (
-                    datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-                    heading,
-                    digest[:12],
-                    (" · note: %s" % note) if note else "",
-                )
-            )
-    except OSError:
-        pass
+    append_log(directory, heading, digest, note)
 
     print("Spec approved. The spec gate is open for %s." % directory.name)
     print("  sha256  %s" % digest[:12])

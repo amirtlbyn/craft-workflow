@@ -1,8 +1,8 @@
 // The craft mod's state contract. claude plugin validate holds every $.state key
 // the hooks module names to this file.
 
-export type Tab = 'spec' | 'tasks' | 'gates' | 'review' | 'cost' | 'deciders'
-export type DocName = 'spec' | 'design' | 'tasks' | 'log'
+export type Tab = 'spec' | 'tasks' | 'gates' | 'review' | 'cost' | 'deciders' | 'scenarios'
+export type DocName = 'spec' | 'design' | 'tasks' | 'log' | 'scenarios'
 
 export type CheckView = {
   exit_code: number | null
@@ -58,6 +58,15 @@ export type Snapshot = {
     traced?: number
     trace_at?: string
   }
+  scenarios?: {
+    state: string
+    sha: string
+    count: number
+    by_criterion: { id: string; lines: string[] }[]
+    missing: string[]
+    error?: boolean | string
+    reason?: string
+  }
   checks?: Record<string, CheckView>
   gate_a?: { items: GateItem[]; passed: number; total: number; green: boolean; started: boolean }
   gate_b?: { state: string; green: boolean; blocking: number; proposed: number; rounds: number }
@@ -104,6 +113,12 @@ declare module 'claude-code' {
       placed: boolean
       confirmApprove: boolean
       stale: string
+      editScenario: string
+      editOpened: string
+      confirmScenarios: string
+      scenarioCursor: string
+      deleteScenario: { id: string; n: number; line: string } | null
+      hscroll: number
     }
   }
 }

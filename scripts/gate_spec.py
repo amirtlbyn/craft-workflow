@@ -25,6 +25,7 @@ configuration: the write goes through.
 Kill switch: CRAFT_HOOKS=off
 """
 
+import os
 import pathlib
 import sys
 
@@ -81,12 +82,79 @@ When the change to spec.md was a mistake, restore the approved text instead.
 """,
 }
 
+SCENARIOS_HEADER = """The scenarios gate is shut. On the %(route)s route, no test file is written
+until the developer approves the test scenarios.
+
+  blocked path      %(path)s
+  spec              %(spec)s
+  scenarios state   %(state)s
+"""
+
+SCENARIOS_STEPS = """  1. Create or refresh scenarios.md. It adds a section for each new criterion:
+
+         "%(bin)s/craft-scenarios" draft
+
+  2. Write one `- Given ..., when ..., then ...` line per case under each
+     `## <ID>` heading.%(missing)s
+  3. Present the scenarios to the developer. Stop.
+  4. Record the approval only on the developer's word:
+
+         "%(bin)s/craft-approve" --scenarios
+"""
+
+SCENARIOS_NEXT_STEP = {
+    "draft": "\nThe scenarios are not approved. Do this, in order:\n\n" + SCENARIOS_STEPS,
+    "stale": (
+        "\nscenarios.md or spec.md changed after the scenarios were approved. The developer\n"
+        "must approve them again. Do this, in order:\n\n" + SCENARIOS_STEPS
+    ),
+}
+
+SCENARIOS_FOOTER = """
+Do not write the test somewhere else, and do not rename it to get around this.
+
+Writes under .claude/ are always allowed. To turn every craft hook off for one
+command, set CRAFT_HOOKS=off."""
+
 FOOTER = """
 Do not write the file somewhere else, and do not rename it to get around this.
 Code written before its spec is agreed builds what was typed, not what was wanted.
 
 Writes under .claude/ are always allowed. To turn every craft hook off for one
 command, set CRAFT_HOOKS=off."""
+
+
+def is_test_path(path, cwd):
+    """Return True when path is a test file under the host repository."""
+    import craft_stack
+
+    root = craft_state.host_root(cwd)
+    target = pathlib.Path(path)
+    if not target.is_absolute():
+        target = pathlib.Path(cwd or os.getcwd()) / target
+    relative = pathlib.Path(os.path.normpath(str(target))).relative_to(root).as_posix()
+    tests = craft_stack.test_spec(cwd)
+    return relative.endswith(tuple(tests["extensions"])) and craft_state.path_matches(relative, tests["globs"])
+
+
+def scenarios_denial(path, cwd, route):
+    """Return the deny reason for a test write, or "" when the write may go on."""
+    if not is_test_path(path, cwd):
+        return ""
+    state, detail = craft_state.scenarios_state(cwd)
+    if state == "approved" or detail.get("error"):
+        return ""
+    missing = detail.get("missing") or []
+    values = {
+        "route": route,
+        "path": path,
+        "spec": detail.get("spec") or "none active",
+        "state": state,
+        "bin": str(BIN),
+        "missing": "\n     Criteria with no case yet: %s." % ", ".join(missing) if missing else "",
+    }
+    step = SCENARIOS_NEXT_STEP["stale" if state == "stale" else "draft"]
+    return SCENARIOS_HEADER % values + step % values + SCENARIOS_FOOTER
 
 
 def decide(payload):
@@ -114,7 +182,8 @@ def decide(payload):
 
         state, detail = craft_state.spec_state(cwd)
         if state == "approved":
-            return ("allow", "")
+            reason = scenarios_denial(path, cwd, route)
+            return ("deny", reason) if reason else ("allow", "")
 
         values = {
             "route": route,

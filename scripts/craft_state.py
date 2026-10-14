@@ -497,6 +497,257 @@ def add_spec_approval(spec_name, digest, note="", cwd=None):
         return False
 
 
+# ---------------------------------------------------------------------------
+# The scenarios of the active spec, and their approval
+# ---------------------------------------------------------------------------
+
+CRITERION_ROW = re.compile(r"^\|\s*([A-Z][A-Z0-9]*-\d+)\s*\|")
+SECTION_HEADING = re.compile(r"^##\s+(.+?)\s*$")
+RETIRED_HEADING = "Retired"
+SCENARIO_LINE = re.compile(r"^-\s+(\S.*?)\s*$")
+
+
+def criterion_ids(spec_text):
+    """Return the criterion IDs of the "Acceptance criteria" section, in order. Never raises."""
+    ids = []
+    try:
+        in_section = False
+        for line in str(spec_text).splitlines():
+            heading = SECTION_HEADING.match(line)
+            if heading:
+                in_section = heading.group(1).strip().lower().startswith("acceptance criteria")
+                continue
+            if in_section:
+                match = CRITERION_ROW.match(line)
+                if match and match.group(1) not in ids:
+                    ids.append(match.group(1))
+    except Exception:
+        pass
+    return ids
+
+
+def scenarios_path(cwd=None):
+    """Return the path of scenarios.md in the active spec directory, or None."""
+    directory = active_spec_dir(cwd)
+    return None if directory is None else directory / "scenarios.md"
+
+
+def parse_scenarios(text):
+    """Split scenarios.md into (preamble, sections, retired). Never raises.
+
+    preamble  the lines before the first "##" heading
+    sections  {heading: [body lines]} in file order, for each "## <ID>"
+    retired   {ID: [body lines]} for each "### <ID>" under "## Retired"; the lines
+              directly under "## Retired" are kept under the key ""
+
+    Body lines are kept as written, so a comment survives a draft. Trailing blank lines are dropped.
+    """
+    preamble, sections, retired = [], {}, {}
+    try:
+        current = preamble
+        in_retired = False
+        for line in str(text).splitlines():
+            if line.startswith("### ") and in_retired:
+                current = retired.setdefault(line[4:].strip(), [])
+                continue
+            heading = SECTION_HEADING.match(line)
+            if heading:
+                name = heading.group(1).strip()
+                in_retired = name == RETIRED_HEADING
+                current = retired.setdefault("", []) if in_retired else sections.setdefault(name, [])
+                continue
+            current.append(line)
+        for body in [preamble] + list(sections.values()) + list(retired.values()):
+            while body and not body[-1].strip():
+                body.pop()
+        if not retired.get(""):
+            retired.pop("", None)
+    except Exception:
+        pass
+    return (preamble, sections, retired)
+
+
+def scenario_texts(body):
+    """Return the scenario texts in one section body: its "- text" lines."""
+    texts = []
+    for line in body:
+        match = SCENARIO_LINE.match(line)
+        if match:
+            texts.append(match.group(1))
+    return texts
+
+
+def read_scenarios(path):
+    """Return {ID: [scenario text, ...]} in file order, or {} when unreadable. Never raises."""
+    try:
+        text = pathlib.Path(path).read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    _preamble, sections, _retired = parse_scenarios(text)
+    return {name: scenario_texts(body) for name, body in sections.items()}
+
+
+def arrange_scenarios(ids, sections, retired):
+    """Return (sections, retired) with one section per ID in spec order. Never invents a line.
+
+    A section whose heading is not in ids moves to retired. A retired section
+    whose ID is back in ids moves back, after the lines already in its section.
+    """
+    arranged = {}
+    kept = {}
+    for name, body in retired.items():
+        if name not in ids:
+            kept[name] = list(body)
+    for name in ids:
+        arranged[name] = list(sections.get(name, [])) + list(retired.get(name, []))
+    for name, body in sections.items():
+        if name not in ids:
+            kept[name] = list(kept.get(name, [])) + list(body)
+    return (arranged, kept)
+
+
+def render_scenarios(preamble, sections, retired):
+    """Return the text of scenarios.md for these parts."""
+
+    def trimmed(body):
+        body = list(body)
+        while body and not body[-1].strip():
+            body.pop()
+        return body
+
+    lines = trimmed(preamble)
+    for name, body in sections.items():
+        lines += ([""] if lines else []) + ["## " + name] + trimmed(body)
+    if retired:
+        lines += ([""] if lines else []) + ["## " + RETIRED_HEADING] + trimmed(retired.get("", []))
+        for name, body in retired.items():
+            if name:
+                lines += ["", "### " + name] + trimmed(body)
+    return "\n".join(lines) + "\n"
+
+
+def write_scenarios(path, sections, retired, preamble=()):
+    """Replace scenarios.md in one step. True on success. Never raises."""
+    temporary = None
+    try:
+        path = pathlib.Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name("%s.%d.tmp" % (path.name, os.getpid()))
+        temporary.write_text(render_scenarios(preamble, sections, retired), encoding="utf-8")
+        os.replace(str(temporary), str(path))
+        return True
+    except Exception:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except Exception:
+                pass
+        return False
+
+
+def scenario_approvals(spec_name, cwd=None):
+    """Return the scenario approvals recorded for one spec directory, oldest first."""
+    try:
+        return [
+            approval
+            for approval in read_approvals(cwd)
+            if approval.get("kind") == "scenarios" and approval.get("spec") == spec_name
+        ]
+    except Exception:
+        return []
+
+
+def scenarios_state(cwd=None):
+    """Return (state, detail). state is one of SPEC_STATES. Never raises.
+
+    none          no active spec, or no scenarios.md
+    not approved  scenarios.md exists, and no scenario approval names this spec
+    stale         scenarios.md, or spec.md, differs from what the latest approval recorded
+    approved      both files match the latest approval
+
+    detail: spec, path, sha256 and spec_sha256 (the files now), approved_sha256,
+    approved_spec_sha256, approved_at, count (scenarios), missing (criteria with none),
+    error and reason. error is True when a file exists but cannot be read or parsed:
+    the state is then "none", and the gate must allow (INV-3). A missing scenarios.md
+    is plain "none" with error False.
+    """
+    detail = {
+        "spec": "",
+        "path": "",
+        "sha256": "",
+        "spec_sha256": "",
+        "approved_sha256": "",
+        "approved_spec_sha256": "",
+        "approved_at": "",
+        "count": 0,
+        "missing": [],
+        "error": False,
+        "reason": "",
+    }
+    try:
+        directory = active_spec_dir(cwd)
+        if directory is None or not (directory / "spec.md").is_file():
+            return ("none", detail)
+        detail["spec"] = directory.name
+        spec_bytes = (directory / "spec.md").read_bytes()
+        detail["spec_sha256"] = hashlib.sha256(spec_bytes).hexdigest()
+        ids = criterion_ids(spec_bytes.decode("utf-8"))
+        path = directory / "scenarios.md"
+        detail["path"] = str(path)
+        try:
+            scenario_bytes = path.read_bytes()
+        except FileNotFoundError:
+            detail["missing"] = list(ids)
+            return ("none", detail)
+        detail["sha256"] = hashlib.sha256(scenario_bytes).hexdigest()
+        _preamble, sections, _retired = parse_scenarios(scenario_bytes.decode("utf-8"))
+        found = {name: scenario_texts(body) for name, body in sections.items()}
+        detail["count"] = sum(len(found.get(name, [])) for name in ids)
+        detail["missing"] = [name for name in ids if not found.get(name)]
+        approvals = scenario_approvals(directory.name, cwd)
+        if not approvals:
+            return ("not approved", detail)
+        latest = approvals[-1]
+        detail["approved_sha256"] = str(latest.get("sha256", ""))
+        detail["approved_spec_sha256"] = str(latest.get("spec_sha256", ""))
+        detail["approved_at"] = str(latest.get("approved_at", ""))
+        if detail["sha256"] == detail["approved_sha256"] and detail["spec_sha256"] == detail["approved_spec_sha256"]:
+            return ("approved", detail)
+        return ("stale", detail)
+    except Exception as error:
+        detail["error"] = True
+        detail["reason"] = "%s: %s" % (type(error).__name__, error)
+        return ("none", detail)
+
+
+def add_scenarios_approval(spec_name, digest, spec_digest, count, note="", cwd=None):
+    """Record that the developer approved scenarios.md at this SHA-256. True on success."""
+    try:
+        data = _read_json(state_path(APPROVAL_FILE, cwd), {})
+        if not isinstance(data, dict):
+            data = {}
+        approvals = data.get("approvals")
+        if not isinstance(approvals, list):
+            approvals = []
+        approvals.append(
+            {
+                "kind": "scenarios",
+                "spec": str(spec_name),
+                "sha256": str(digest),
+                "spec_sha256": str(spec_digest),
+                "count": int(count),
+                "approved_at": now(),
+                "approved_by": "developer",
+                "note": str(note or ""),
+                "session_id": current_session_id(cwd),
+            }
+        )
+        data["approvals"] = approvals[-MAX_APPROVALS:]
+        return _write_json_atomic(state_path(APPROVAL_FILE, cwd), data)
+    except Exception:
+        return False
+
+
 TASK_LINE = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$")
 STATE_FIELD = re.compile(r"\bState:\s*([a-z][a-z ]*[a-z])", re.IGNORECASE)
 RISK_FIELD = re.compile(r"\bRisk:\s*(low|high)\b", re.IGNORECASE)

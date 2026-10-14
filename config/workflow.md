@@ -89,6 +89,12 @@ regression test.
 
 Everything else may be **quick**.
 
+**Two approvals on task and project.** The developer approves the spec first.
+That opens the gate for source files. Claude then drafts the test scenarios
+with `bin/craft-scenarios draft`, presents them, and stops. The developer
+approves them, and `bin/craft-approve --scenarios` records it. That opens the
+gate for test files. Claude writes no test before then.
+
 **Never let quick touch:** money, authentication, authorization, migrations,
 concurrency, or an externally visible contract. Promote to task instead.
 
@@ -144,6 +150,7 @@ creates the directory from the templates in `skills/spec/templates/`.
 └── <YYYY-MM-DD>-<slug>/
     ├── spec.md                  # WHAT and WHY. Approved by the developer. Stable
     ├── design.md                # HOW. project route only
+    ├── scenarios.md             # one Given/When/Then line per scenario, per criterion. Approved second
     ├── tasks.md                 # the task checklist, its state, the checkpoint
     └── log.md                   # append-only: gates, reviews, spec deltas
 ```
@@ -151,6 +158,12 @@ creates the directory from the templates in `skills/spec/templates/`.
 `spec.md` is approved once. The approval is bound to the file's SHA-256. When the
 spec changes, the gate closes again until the developer approves the change. Put
 state and progress in `tasks.md` and `log.md`, never in `spec.md`.
+
+`scenarios.md` has its own approval. `bin/craft-approve --scenarios` binds it to
+the SHA-256 of `scenarios.md` and of `spec.md`. A change to either file makes the
+scenarios `stale`. The scenario gate covers test files only. Source files need
+the spec approval alone. `bin/craft-spec trace` finds test files with the same
+globs as the gate.
 
 **The gates are derived from the spec. A session is `done` only when both pass:**
 

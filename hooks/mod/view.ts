@@ -190,6 +190,41 @@ export function specState(state: string | undefined): { glyph: string; text: str
   }
 }
 
+/** The scenarios state as the `S` glyph: ✓ approved, ● not approved, ! stale, ○ none. */
+export function scenariosGlyph(state: string | undefined): { glyph: string; color: string } {
+  switch (state) {
+    case 'approved':
+      return { glyph: '✓', color: 'success' }
+    case 'not approved':
+      return { glyph: '●', color: 'warning' }
+    case 'stale':
+      return { glyph: '!', color: 'warning' }
+    default:
+      return { glyph: '○', color: 'subtle' }
+  }
+}
+
+/** `text` scrolled left by `offset` columns: the hidden start shown as `…` (TSC-13). */
+export function shifted(text: string, offset: number): string {
+  return offset > 0 ? '…' + text.slice(offset) : text
+}
+
+/** How far `text` must shift for its end to show in `room` columns, `…` included; 0 when it fits. */
+export function overflow(text: string, room: number): number {
+  return text.length > room ? text.length - room + 1 : 0
+}
+
+/** The Scenarios tab's rows in order: `ID:n` per scenario, `ID:0` for a criterion with none. */
+export function scenarioRows(byCriterion: readonly { id: string; lines: readonly string[] }[]): string[] {
+  return byCriterion.flatMap(row => (row.lines.length ? row.lines.map((_, index) => `${row.id}:${index + 1}`) : [`${row.id}:0`]))
+}
+
+/** `ID:n` split at its last colon. */
+export function rowParts(row: string): { id: string; n: number } {
+  const at = row.lastIndexOf(':')
+  return { id: row.slice(0, at), n: Number(row.slice(at + 1)) || 0 }
+}
+
 export function gateBText(state: string | undefined): { glyph: string; color: string } {
   switch (state) {
     case 'green':

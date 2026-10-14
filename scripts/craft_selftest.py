@@ -261,7 +261,20 @@ def test_gate_spec():
     check(group, "test, route task, no spec", action(write_payload("apps/wallet/tests/test_limit.py", no_spec)), "deny")
     check(group, "source, spec not approved", action(write_payload("apps/wallet/services.py", unapproved)), "deny")
     check(group, "source, spec approved", action(write_payload("apps/wallet/services.py", approved)), "allow")
-    check(group, "test, spec approved", action(write_payload("tests/test_wallet.py", approved)), "allow")
+    check(group, "test, spec approved, scenarios not approved", action(write_payload("tests/test_wallet.py", approved)), "deny")
+    scenarios = make_repo(route="task", session_id="sess-1")
+    scenarios_dir = make_spec(scenarios, approved=True)
+    scenarios_file = scenarios_dir / "scenarios.md"
+    scenarios_file.write_text("## WDL-1\n- Given a, when b, then c\n\n## WDL-2\n- Given d, when e, then f\n", encoding="utf-8")
+    _state, detail = craft_state.scenarios_state(str(scenarios))
+    craft_state.add_scenarios_approval(
+        scenarios_dir.name, detail["sha256"], detail["spec_sha256"], detail["count"], cwd=str(scenarios)
+    )
+    check(group, "test, scenarios approved", action(write_payload("tests/test_wallet.py", scenarios)), "allow")
+    scenarios_file.chmod(0)
+    if not os.access(str(scenarios_file), os.R_OK):
+        check(group, "test, scenarios.md unreadable -> error -> allow", action(write_payload("tests/test_wallet.py", scenarios)), "allow")
+    scenarios_file.chmod(0o644)
     check(
         group,
         "approval survives a new Claude session id",

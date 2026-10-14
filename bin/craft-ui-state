@@ -185,6 +185,26 @@ def deciders_view(cwd):
         return {"enabled": False, "error": type(error).__name__}
 
 
+def scenarios_view(cwd, rows):
+    """The scenarios block: state, short sha, count, each criterion's lines in spec order, and the missing IDs."""
+    try:
+        state, detail = craft_state.scenarios_state(cwd)
+        path = detail.get("path")
+        found = craft_state.read_scenarios(path) if path else {}
+        return {
+            "state": state,
+            "sha": (detail.get("sha256") or "")[:12],
+            "count": detail.get("count", 0),
+            "by_criterion": [{"id": i, "lines": found.get(i) or []} for i in dict.fromkeys(x["id"] for x in rows)],
+            "missing": list(detail.get("missing") or []),
+            "error": bool(detail.get("error")),
+            "reason": str(detail.get("reason") or ""),
+        }
+    except Exception as error:
+        return {"state": "none", "sha": "", "count": 0, "by_criterion": [], "missing": [], "error": True,
+                "reason": type(error).__name__}
+
+
 def snapshot(cwd=None):
     root = craft_state.host_root(cwd)
     data = {"version": 1, "at": craft_state.now(), "repo": str(root), "plugin_root": str(PLUGIN_ROOT)}
@@ -220,6 +240,7 @@ def snapshot(cwd=None):
         spec["trace_at"] = trace.get("at")
         spec["traced"] = sum(1 for row in spec["criteria"] if row.get("tests"))
     data["spec"] = spec
+    data["scenarios"] = scenarios_view(str(root), spec["criteria"])
     recorded = craft_state.checks(str(root))
     latest = last_by_label(recorded)
     data["checks"] = latest

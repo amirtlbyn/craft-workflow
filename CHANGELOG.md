@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.8.0 — unreleased — the scenario gate returns
+
+### What changed for the developer
+
+- **Two approvals on `task` and `project`.** You approve the spec. Then Claude
+  drafts the test scenarios, one or more `Given ..., when ..., then ...` lines
+  per criterion, including the failure story. Claude shows them grouped by
+  criterion and stops. You approve, and only then can Claude write test files.
+  Source files open with the spec approval, as before.
+- **The approval is bound to content.** It records the SHA-256 of `scenarios.md`
+  and of `spec.md`. A change to either file makes the scenarios stale, and test
+  files close again.
+- **You can edit on the board.** The Scenarios tab (key 3, after Tasks) keeps
+  one selected row (`j`/`k`). `e` edits it, `i` adds a scenario to its
+  criterion, `x` deletes it after a confirm, and `a` approves after a confirm.
+  Only one text field shows at a time, and an empty Enter closes it.
+- **The board scrolls sideways.** `h` and `l` (or `◀` `▶`) shift long row text
+  on every tab. The IDs and glyphs stay in place. The viewer shows `scenarios.md` with `n`. The status line shows an
+  `S` glyph next to `A` and `B`.
+- **A denied test write explains itself.** The reason names the state, the
+  `craft-scenarios draft` step, and each criterion without a scenario.
+
+### Why it returns
+
+0.3.0 removed the separate scenario gate. It folded the test list into the
+spec, so one approval covered the criteria and the tests. That did not let you
+see the concrete cases before a test existed. A criterion says what must hold.
+A scenario says which input, which state, and which result. You want to read
+and change those cases first. One approval of the criteria did not give you that.
+The gate returns, narrower: it covers test files only.
+
+0.3.0 removed the scenario gate to cut cost and to have one approval instead of
+two. 0.8.0 accepts one more approval per task. The board's Scenarios tab and
+the status-line `S` keep that cost to one screen and one key.
+
+### New
+
+- `bin/craft-scenarios status|draft|add|set|remove`.
+- `bin/craft-approve --scenarios`. It refuses while a criterion has no scenario,
+  and while the spec has no criterion.
+- `skills/spec/templates/scenarios.md`. `craft-spec new` copies it.
+- `scenarios.md` in the spec directory, and `kind: scenarios` approvals in
+  `approval.json`.
+
+### Known limits
+
+- The gate watches the file tools. A `Bash` command can still write a test file.
+- Test files are found by glob. A test path the globs miss is not gated. A
+  source file that matches a test glob is gated.
+- `.claude/craft/stack.json` is agent-writable and changes which files count as
+  tests. The hook cannot tell who approved. It trusts `bin/craft-approve`.
+- These risks are accepted in the design of the spec
+  `2026-10-12-test-scenarios-drafted-criterion-edited-board`.
+- Only the skill rule and `log.md` stop Claude from running
+  `craft-approve --scenarios` itself. The board's confirm is the developer's
+  own path.
+- A hook that cannot read an existing `scenarios.md` allows the write.
+
 ## 0.7.0 — 2026-10-10 — every backend stack, the concurrency gate, AI deciders, and a mod
 
 ### 🧩 Stack packs: one workflow, any backend language

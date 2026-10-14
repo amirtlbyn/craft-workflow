@@ -416,6 +416,8 @@ def craft_segment(painter, snapshot):
         parts.append(painter.paint("dim", "A ") + " ".join(checks))
     glyph, role = GATE_B_STATES.get(as_dict(snapshot.get("gate_b")).get("state") or "not run", ("○", "dim"))
     parts.append(painter.paint("dim", "B ") + painter.paint(role, glyph))
+    glyph, role = SPEC_STATES.get(as_dict(snapshot.get("scenarios")).get("state"), ("○", "dim"))
+    parts.append(painter.paint("dim", "S ") + painter.paint(role, glyph))
     tasks = spec.get("tasks") or []
     if tasks:
         done = sum(1 for task in tasks if task.get("done"))
