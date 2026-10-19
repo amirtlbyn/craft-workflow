@@ -1,0 +1,32 @@
+{
+  "id": "angular",
+  "label": "Angular",
+  "emoji": "🅰️",
+  "language": "javascript",
+  "priority": 85,
+  "detect": {
+    "any_contains": [{ "files": ["package.json"], "pattern": "\\\"@angular/core\\\"\\s*\\s*:" }]
+  },
+  "source_extensions": [".ts", ".html", ".scss"],
+  "tests": {
+    "globs": ["*.spec.ts", "**/*.spec.ts", "e2e/*"],
+    "extensions": [".ts"],
+    "id_rule": "Put the criterion ID first in the test description."
+  },
+  "checks": {
+    "tests": [{ "when_script": "test", "run": "{pm} test" }, { "when_file": "angular.json", "run": "npx ng test --watch=false" }],
+    "lint": [{ "when_script": "lint", "run": "{pm} run lint" }, { "when_dependency": "@angular-eslint/builder", "run": "npx ng lint" }],
+    "format": [{ "when_dependency": "prettier", "run": "npx prettier --check ." }],
+    "types": [{ "when_file": "tsconfig.json", "run": "npx tsc --noEmit" }]
+  },
+  "paths": {
+    "money": ["*/payment*/*", "*/billing/*", "*balance*.ts"],
+    "auth": ["*/auth/*", "*guard.ts", "*interceptor.ts", "*token*.ts"],
+    "migrations": ["*/migrations/*"],
+    "models": ["*/models/*", "*.model.ts"],
+    "views": ["*/components/*", "*/pages/*", "*.component.ts", "*.component.html"]
+  },
+  "skills": ["component-design", "state-management", "styling-discipline"],
+  "standards": ["component_design_standards", "frontend_performance_standards", "accessibility_standards"],
+  "lenses": "stacks/angular/lenses.md"
+}

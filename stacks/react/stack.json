@@ -1,0 +1,48 @@
+{
+  "id": "react",
+  "label": "React",
+  "emoji": "⚛️",
+  "language": "javascript",
+  "priority": 80,
+  "detect": {
+    "any_contains": [
+      {
+        "files": ["package.json"],
+        "pattern": "\\\"react\\\"\\s*\\s*:"
+      }
+    ]
+  },
+  "source_extensions": [".js", ".jsx", ".ts", ".tsx"],
+  "tests": {
+    "globs": ["*.test.{js,jsx,ts,tsx}", "*.spec.{js,jsx,ts,tsx}", "__tests__/*", "*/__tests__/*"],
+    "extensions": [".js", ".jsx", ".ts", ".tsx"],
+    "id_rule": "Put the criterion ID first in the test name."
+  },
+  "checks": {
+    "tests": [
+      { "when_script": "test", "run": "{pm} test" },
+      { "when_dependency": "vitest", "run": "npx vitest run" },
+      { "when_dependency": "jest", "run": "npx jest" },
+      { "run": "npm test" }
+    ],
+    "lint": [
+      { "when_script": "lint", "run": "{pm} run lint" },
+      { "when_dependency": "eslint", "run": "npx eslint ." }
+    ],
+    "format": [
+      { "when_script": "format:check", "run": "{pm} run format:check" },
+      { "when_dependency": "prettier", "run": "npx prettier --check ." }
+    ],
+    "types": [{ "when_file": "tsconfig.json", "run": "npx tsc --noEmit" }]
+  },
+  "paths": {
+    "money": ["*/payment*/*", "*/billing/*", "*balance*.ts", "*fee*.ts"],
+    "auth": ["*/auth/*", "*auth*.ts", "*token*.ts", "*permission*.ts"],
+    "migrations": ["*/migrations/*", "prisma/migrations/*"],
+    "models": ["*.model.ts", "*.entity.ts", "*/models/*", "*/repositories/*"],
+    "views": ["*/components/*", "*/pages/*", "*/routes/*", "app/*", "*.tsx"]
+  },
+  "skills": ["component-design", "state-management", "styling-discipline"],
+  "standards": ["component_design_standards", "frontend_performance_standards", "accessibility_standards"],
+  "lenses": "stacks/react/lenses.md"
+}
