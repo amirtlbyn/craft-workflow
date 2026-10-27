@@ -39,3 +39,30 @@ def test_craft_stack_prefers_frontend_pack_over_node(tmp_path):
 def test_build_detection_uses_config_and_package_evidence(tmp_path):
     root = project(tmp_path, {"package.json": json.dumps({"devDependencies": {"webpack": "5"}})})
     assert [(item.name, item.config) for item in detect_build(root)] == [("webpack", "")]
+
+
+def test_nuxt_project_reports_nuxt_framework(tmp_path):
+    root = project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0", "vue": "^3.5.0"}}),
+        "nuxt.config.ts": "export default defineNuxtConfig({})",
+    })
+    result = detect_frontend(root)
+    assert [(item.framework, item.build_tools) for item in result] == [("nuxt", ("nuxt",))]
+
+
+def test_nuxt_without_vue_dep_still_detected(tmp_path):
+    root = project(tmp_path, {"package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}})})
+    assert [item.framework for item in detect_frontend(root)] == ["nuxt"]
+
+
+def test_build_detection_reports_nuxt_config(tmp_path):
+    root = project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}}),
+        "nuxt.config.ts": "export default defineNuxtConfig({})",
+    })
+    assert [(item.name, item.config) for item in detect_build(root)] == [("nuxt", "nuxt.config.ts")]
+
+
+def test_build_detection_reports_nuxt_dependency_without_config(tmp_path):
+    root = project(tmp_path, {"package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}})})
+    assert [(item.name, item.config) for item in detect_build(root)] == [("nuxt", "")]

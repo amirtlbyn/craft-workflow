@@ -15,6 +15,7 @@ class BuildToolResult:
 
 
 CONFIG_FILES = {
+    "nuxt": ("nuxt.config.js", "nuxt.config.mjs", "nuxt.config.ts", "nuxt.config.mts"),
     "vite": ("vite.config.js", "vite.config.ts", "vite.config.mjs", "vite.config.mts"),
     "next": ("next.config.js", "next.config.mjs", "next.config.ts"),
     "webpack": ("webpack.config.js", "webpack.config.ts", "webpack.config.cjs"),

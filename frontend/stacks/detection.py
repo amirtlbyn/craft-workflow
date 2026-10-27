@@ -27,10 +27,12 @@ class DetectionResult:
 FRAMEWORK_PACKAGES = {
     "react": ("react",),
     "vue": ("vue",),
+    "nuxt": ("nuxt", "nuxt-nightly", "@nuxt/framework"),
     "angular": ("@angular/core",),
 }
 
 BUILD_TOOL_FILES = {
+    "nuxt": ("nuxt.config.js", "nuxt.config.mjs", "nuxt.config.ts", "nuxt.config.mts"),
     "vite": ("vite.config.js", "vite.config.ts", "vite.config.mjs", "vite.config.mts"),
     "next": ("next.config.js", "next.config.mjs", "next.config.ts"),
     "remix": ("remix.config.js", "remix.config.ts"),
@@ -63,7 +65,7 @@ def _framework(packages: set[str]) -> tuple[str, tuple[str, ...]] | None:
         return None
     # Angular's package name is unique; preserve an explicit priority if a
     # hybrid package accidentally includes more than one framework.
-    priority = {"angular": 3, "vue": 2, "react": 1}
+    priority = {"nuxt": 4, "angular": 3, "vue": 2, "react": 1}
     return max(matches, key=lambda item: priority[item[0]])
 
 
