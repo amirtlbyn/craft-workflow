@@ -84,3 +84,12 @@ def test_craft_stack_lens_resolves_nuxt_sections_by_name(tmp_path):
     })
     for lens in ("ssr", "data", "hydration", "component", "accessibility"):
         assert len(craft_stack.lens_addendum(lens, "nuxt")) > 40, lens
+
+
+def test_skills_for_omits_skills_without_files(tmp_path, monkeypatch):
+    project(tmp_path, {"package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}})})
+    monkeypatch.setattr(craft_stack, "detect", lambda cwd=None: [{"id": "nuxt", "dir": "", "evidence": "x"}])
+    skills = craft_stack.skills_for(cwd=str(tmp_path), with_concurrency=False)
+    assert skills, "expected the nuxt pack to list skills"
+    for name in skills:
+        assert (craft_stack.PLUGIN_ROOT / "skills" / name / "SKILL.md").exists(), name

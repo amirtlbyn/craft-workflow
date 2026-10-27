@@ -97,6 +97,8 @@ def test_stacks():
     laravel = repo({"artisan": "", "composer.json": '{"require":{"laravel/framework":"^11"}}', "package.json": "{}"})
     symfony = repo({"composer.json": '{"require":{"symfony/framework-bundle":"^7"}}'})
     php = repo({"composer.json": '{"require":{"slim/slim":"^4"}}'})
+    nuxt = repo({"package.json": '{"dependencies":{"nuxt":"^4.0.0"}}',
+                 "nuxt.config.ts": "export default defineNuxtConfig({})"})
     plain = repo({"README.md": "# nothing"})
     lookalike = repo({"requirements.txt": "django-environ\ndjangorestframework-simplejwt\n"})
 
@@ -110,6 +112,10 @@ def test_stacks():
     check(group, "go.mod is go", ids(craft_stack.detect(str(go))), "go@.")
     check(group, "pom.xml is java", ids(craft_stack.detect(str(java))), "java@.")
     check(group, "package.json is node", ids(craft_stack.detect(str(node))), "node@.")
+    check(group, "nuxt dep and config are nuxt, not vue", ids(craft_stack.detect(str(nuxt))), "nuxt@.")
+    check(group, "the nuxt pack lists only skills that exist",
+          all((craft_stack.PLUGIN_ROOT / "skills" / name / "SKILL.md").is_file()
+              for name in craft_stack.skills_for(str(nuxt), with_concurrency=False)), True)
     check(group, "a monorepo gets one stack per service", ids(craft_stack.detect(str(mono))),
           "fastapi@api,go@services/wallet,node@web")
     check(group, "one python pack per directory, by priority", ids(craft_stack.detect(str(both))), "django@.,node@.")
