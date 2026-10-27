@@ -439,6 +439,22 @@ def lens_addendum(lens, stack_id):
                 continue
             if inside:
                 lines.append(line)
+        if lines:
+            return "\n".join(lines).strip()
+        # Fall back to a keyword match: a lens named "ssr" resolves the
+        # "## SSR Safety Lens" section (php packs name headings by lens id;
+        # frontend packs use prose headings).
+        needle = lens.lower()
+        for line in text.splitlines():
+            heading = re.match(r"^##\s+(.+?)\s*$", line)
+            if heading and needle in heading.group(1).strip().lower():
+                inside = True
+                continue
+            if inside:
+                if heading:
+                    inside = False
+                    continue
+                lines.append(line)
         return "\n".join(lines).strip()
     except Exception:
         return ""

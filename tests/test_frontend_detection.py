@@ -66,3 +66,21 @@ def test_build_detection_reports_nuxt_config(tmp_path):
 def test_build_detection_reports_nuxt_dependency_without_config(tmp_path):
     root = project(tmp_path, {"package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}})})
     assert [(item.name, item.config) for item in detect_build(root)] == [("nuxt", "")]
+
+
+def test_craft_stack_prefers_nuxt_pack_over_vue(tmp_path):
+    project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}}),
+        "nuxt.config.ts": "export default defineNuxtConfig({})",
+    })
+    found = craft_stack.detect(str(tmp_path))
+    assert [item["id"] for item in found] == ["nuxt"]
+
+
+def test_craft_stack_lens_resolves_nuxt_sections_by_name(tmp_path):
+    project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"nuxt": "^4.0.0"}}),
+        "nuxt.config.ts": "export default defineNuxtConfig({})",
+    })
+    for lens in ("ssr", "data", "hydration", "component", "accessibility"):
+        assert len(craft_stack.lens_addendum(lens, "nuxt")) > 40, lens

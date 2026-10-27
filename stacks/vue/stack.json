@@ -17,12 +17,11 @@
     "tests": [{ "when_script": "test", "run": "{pm} test" }, { "when_dependency": "vitest", "run": "npx vitest run" }, { "run": "npm test" }],
     "lint": [{ "when_script": "lint", "run": "{pm} run lint" }, { "when_dependency": "eslint", "run": "npx eslint ." }],
     "format": [{ "when_dependency": "prettier", "run": "npx prettier --check ." }],
-    "types": [{ "when_file": "tsconfig.json", "run": "npx vue-tsc --noEmit" }]
+    "types": [{ "when_dependency": "vue-tsc", "run": "npx vue-tsc --noEmit" }]
   },
   "paths": {
-    "money": ["*/payment*/*", "*/billing/*", "*balance*.ts"],
-    "auth": ["*/auth/*", "*auth*.ts", "*token*.ts"],
-    "migrations": ["*/migrations/*"],
+    "money": ["*/payment*/*", "*/billing/*", "composables/use*payment*.ts", "stores/*cart*.ts"],
+    "auth": ["*/auth/*", "*auth*.ts", "*token*.ts", "stores/*auth*.ts"],
     "models": ["*/models/*", "*.model.ts"],
     "views": ["*/components/*", "*/views/*", "*/pages/*", "*.vue"]
   },
