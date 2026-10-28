@@ -99,6 +99,44 @@ def main():
                     dangling.append("%s -> %s" % (stack_id, name))
         check("no dangling skill routing", not dangling, dangling)
 
+        # FRONTEND_STACKS are routed in config/workflow.md (doc regression).
+        workflow = (ROOT / "config" / "workflow.md").read_text(encoding="utf-8")
+        workflow_lines = workflow.splitlines()
+        FRONTEND_STACKS = ("react", "vue", "nuxt", "angular")
+
+        def row_of(marker, source=workflow_lines):
+            return next((line for line in source if marker in line), "")
+
+        stack_table = workflow_lines[workflow_lines.index("## 9. Stacks — one workflow, any backend language"):]
+        for stack_id in FRONTEND_STACKS:
+            pack = craft_stack.load_packs()[stack_id]
+            names = pack.get("skills") or []
+
+            # §9 stack-table row: emoji id, detection evidence, every pack skill.
+            table_row = row_of("`%s` |" % stack_id, stack_table)
+            check("workflow stack table routes %s" % stack_id, bool(table_row), "no row")
+            check("workflow stack table lists every %s skill" % stack_id,
+                  table_row and all("`%s`" % name in table_row for name in names),
+                  (table_row, names))
+
+            # Skill-map row (the craft routing map): trigger text routes each skill.
+            # The nuxt map row routes to `nuxt-ssr-data` in place of styling-discipline.
+            if stack_id == "nuxt":
+                map_row = row_of("Nuxt code:")
+                expected_skills = ("nuxt-ssr-data", "component-design", "state-management")
+            else:
+                map_row = row_of("%s component code" % pack.get("label", stack_id).title())
+                expected_skills = tuple(names)
+            check("workflow skill map routes %s" % stack_id, bool(map_row), "no row")
+            check("workflow skill map for %s names every pack skill" % stack_id,
+                  map_row and all("`%s`" % name in map_row for name in expected_skills),
+                  (map_row, expected_skills))
+
+            # Every skill named in those workflow rows exists on disk.
+            missing = [name for name in names
+                       if not (ROOT / "skills" / name / "SKILL.md").is_file()]
+            check("workflow %s skills exist on disk" % stack_id, not missing, missing)
+
 
 if __name__ == "__main__":
     main()
