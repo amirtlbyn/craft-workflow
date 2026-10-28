@@ -15,12 +15,12 @@ Severity ceiling: High. Confidence threshold: 0.7.
 - [ ] Every emit has a handler expectation and a documented payload.
 - [ ] Reactivity/hooks rules hold: no conditional hooks, complete dependency
       arrays (React); `computed` for derived values, watchers only for side
-      effects (Vue); `OnPush` with `trackBy` (Angular).
+      effects (Vue).
 - [ ] Loading, error, empty, and success states are explicit in the render.
 - [ ] Every subscription, observer, listener, and timer has a teardown.
 - [ ] Memoization is measured: `React.memo`/`useCallback`/`useMemo` appear
       only where a re-render or computation was measured to matter.
-- [ ] Error boundaries (React) or error states (Vue/Angular) wrap critical
+- [ ] Error boundaries (React) or error states (Vue) wrap critical
       subtrees.
 - [ ] The component is testable from its public contract: props in, events
       out, rendered output.
@@ -39,6 +39,3 @@ detected stack's own notes. Per stack, the lens resolves to:
   theming; slots before boolean props.
 - **Nuxt** — everything Vue, plus the SSR lenses: no module-level shared
   state, `useState` keys stable and unique, hydration-safe rendering.
-- **Angular** — `OnPush` change detection; `trackBy` on `*ngFor`;
-  subscriptions torn down via `async` pipe or `takeUntilDestroyed`; typed
-  constructor injection.

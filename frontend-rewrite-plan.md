@@ -37,7 +37,6 @@ Craft-workflow is a sophisticated spec-driven, cost-routed engineering workflow 
 ### 1. **Framework Diversity**
 - React (with Next.js, Remix, Vite)
 - Vue (with Nuxt, Vite)
-- Angular
 - Svelte/SvelteKit
 - SolidJS
 - Qwik
@@ -126,6 +125,9 @@ def detect_build_tool():
 - E2E test structuring
 - Visual regression testing
 
+Status: deferred. The current implementation includes component, state, and
+styling skills; testing guidance remains outside this rewrite's delivered scope.
+
 ### Phase 3: Frontend Review Lenses
 
 #### 3.1 **Component Lens**
@@ -146,11 +148,17 @@ def detect_build_tool():
 - Network request patterns
 - Memory leak detection
 
+Status: deferred. Static build analysis exists, but a dedicated performance
+review lens is outside the current delivered scope.
+
 #### 3.4 **Mobile Lens**
 - Responsive design compliance
 - Touch interaction patterns
 - Mobile performance metrics
 - PWA capabilities
+
+Status: deferred. Mobile-specific review remains planned work rather than a
+completed lens.
 
 ### Phase 4: Frontend-Specific Gates
 
@@ -166,11 +174,17 @@ def detect_build_tool():
 - Tree shaking validation
 - Asset optimization
 
+Status: deferred as a hook-enforced gate. The read-only analyzers exist, but
+they are not wired as a PreToolUse gate.
+
 #### 4.3 **Accessibility Gate**
 - WCAG compliance checks
 - Automated a11y testing
 - Manual review requirements
 - Assistive technology testing
+
+Status: deferred. Accessibility review guidance exists, but there is no
+separate automated gate in the current implementation.
 
 ## Implementation Roadmap
 
@@ -244,7 +258,7 @@ class ComponentTestValidator:
 
 ### 2. **Progressive Enhancement**
 - Start with React/Next.js support
-- Expand to Vue, Angular, Svelte
+- Expand to Vue, Nuxt, Svelte
 - Add framework-specific optimizations
 
 ### 3. **Community Integration**

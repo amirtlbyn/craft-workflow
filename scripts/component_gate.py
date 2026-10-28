@@ -12,13 +12,13 @@ The hook is inert unless all of these hold:
 
   1. A craft session is recorded at <repo>/.claude/craft/session.json
   2. The target path is inside the host repository
-  3. `bin/craft-stack for <path>` names a frontend stack (react, vue, nuxt,
-     angular) and the path is a component source file
+  3. `bin/craft-stack for <path>` names a frontend stack (react, vue, nuxt)
+     and the path is a component source file
 
 Then it denies the write when the new content violates one of:
 
-  * a component file with no component definition (empty or placeholder write
-    over an existing component)
+  * a full Write to a component file with no component definition (empty or
+    placeholder content; Edit fragments are checked as fragments)
   * an event listener or subscription added with no teardown in the same file
     (React: removeEventListener without addEventListener symmetry is allowed;
     the rule fires when addEventListener/setInterval/subscribe appears and no
@@ -44,7 +44,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import craft_state  # noqa: E402
 
-FRONTEND_STACKS = ("react", "vue", "nuxt", "angular")
+FRONTEND_STACKS = ("react", "vue", "nuxt")
 COMPONENT_SUFFIXES = (".vue", ".jsx", ".tsx")
 SOURCE_SUFFIXES = (".js", ".ts", ".mjs", ".jsx", ".tsx", ".vue", ".svelte")
 
@@ -95,17 +95,17 @@ def is_frontend_source(path, cwd):
     return None
 
 
-def violations(text, suffix):
-    """Return the list of rule names the new content violates. Never raises."""
+def violations(text, suffix, *, check_component=True, existing_text=""):
+    """Return the list of rule names the candidate content violates."""
     broken = []
     if not suffix.endswith(COMPONENT_SUFFIXES):
         return broken
     stripped = (text or "").strip()
-    if stripped and not COMPONENT_DEF.search(stripped):
+    if check_component and stripped and not COMPONENT_DEF.search(stripped):
         broken.append("no-component")
     if LISTENER_ADD.search(stripped) and not TEARDOWN.search(stripped):
         broken.append("listener-teardown")
-    if RAW_HEX.search(stripped):
+    if RAW_HEX.search(stripped) and not RAW_HEX.search(existing_text or ""):
         broken.append("raw-hex-style")
     return broken
 
@@ -141,7 +141,17 @@ def decide(payload):
         except Exception:
             content = ""
 
-        broken = violations(content, target.suffix)
+        existing = ""
+        try:
+            existing = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            pass
+        broken = violations(
+            content,
+            target.suffix,
+            check_component=payload.get("tool_name") == "Write",
+            existing_text=existing,
+        )
         if not broken:
             return ("allow", "")
         rule = RULES[broken[0]]

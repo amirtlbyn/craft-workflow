@@ -20,7 +20,7 @@ import craft_stack  # noqa: E402
 
 FAILURES = []
 
-COMPONENT_NEEDLES = ["prop", "emit", "hook", "computed", "onpush", "trackby",
+COMPONENT_NEEDLES = ["prop", "emit", "hook", "computed",
                      "memo", "loading", "teardown", "error bound"]
 ACCESSIBILITY_NEEDLES = ["keyboard", "aria", "focus", "contrast", "label",
                          "live", "reduced", "dialog", "alt", "semantic"]
@@ -69,7 +69,7 @@ def main():
     check("protocol routes accessibility lens", "| `accessibility` |" in protocol)
 
     # Every frontend stack resolves both lenses with real content.
-    for stack_id in ("react", "vue", "nuxt", "angular"):
+    for stack_id in ("react", "vue", "nuxt"):
         for lens in ("component", "accessibility"):
             addendum = craft_stack.lens_addendum(lens, stack_id)
             check("%s resolves %s lens" % (stack_id, lens), len(addendum) > 40, addendum[:60])

@@ -14,7 +14,7 @@ frontend/
 │   │   ├── stack.json
 │   │   ├── lenses.md
 │   │   └── standards/
-│   └── angular/
+│   └── nuxt/
 │       ├── stack.json
 │       ├── lenses.md
 │       └── standards/
@@ -134,7 +134,7 @@ frontend/
 ```markdown
 ---
 name: component-design
-description: "Design and implement React/Vue/Angular components following best practices. Load before creating any new component."
+description: "Design and implement React/Vue/Nuxt components following best practices. Load before creating any new component."
 ---
 
 # Component Design Principles
@@ -235,12 +235,6 @@ Confidence Threshold: 0.7
 - Implement watchers appropriately
 - Use provide/inject for deep component trees
 - Follow composition API patterns
-
-#### Angular
-- Use OnPush change detection strategy
-- Implement pure pipes for transformations
-- Use trackBy in ngFor loops
-- Implement unsubscribe patterns
 ```
 
 ### 4.2 Accessibility Lens
@@ -474,7 +468,7 @@ bin/craft-check -- npx lighthouse-ci \
 |---|---|---|---|---|
 | ⚛️ React | `package.json` contains `react` | test description: `test('WDL-3: ...')` | §12 | §13 |
 | 🖖 Vue | `package.json` contains `vue` | test description: `it('WDL-3: ...')` | §12 | §13 |
-| 🅰️ Angular | `package.json` contains `@angular/core` | `it('WDL-3: ...')` | §12 | §13 |
+| 🟩 Nuxt | `package.json` contains `nuxt` | test description: `it('WDL-3: ...')` | §12 | §13 |
 | ⚡ Svelte | `package.json` contains `svelte` | test description | §12 | §13 |
 
 ## 12. Bundle Gate
@@ -519,7 +513,7 @@ export CRAFT_FRONTEND_ACCESSIBILITY=true
 - Integration with existing craft command
 
 ### Phase 2: Enhanced Features (Weeks 5-8)
-- Vue and Angular support
+- Vue and Nuxt support
 - Performance gates
 - Accessibility lens
 - Component testing integration

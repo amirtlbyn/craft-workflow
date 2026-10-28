@@ -8,7 +8,7 @@ Generates throwaway sample projects per frontend framework in a temp
 directory, then drives every layer of the rewrite against them the way a real
 session would:
 
-  1. sample project generation (react, vue, nuxt, angular, mixed fullstack)
+  1. sample project generation (react, vue, nuxt, mixed fullstack)
   2. stack detection through scripts/craft_stack.py (pack routing)
   3. build analysis (frontend/build/analyzer.py)
   4. skill routing (skills_for)
@@ -37,7 +37,7 @@ from frontend.build.analyzer import (  # noqa: E402
 )
 
 FAILURES = []
-FRONTEND_STACKS = ("react", "vue", "nuxt", "angular")
+FRONTEND_STACKS = ("react", "vue", "nuxt")
 
 
 def check(name, condition, detail: object = ""):
@@ -91,20 +91,6 @@ NUXT_APP = {
     "app/pages/index.vue": "<template><main>hi</main></template>",
 }
 
-ANGULAR_APP = {
-    "package.json": json.dumps({
-        "name": "sample-angular",
-        "dependencies": {"@angular/core": "^18.0.0"},
-        "devDependencies": {"@angular/cli": "^18.0.0", "typescript": "^5.0.0"},
-    }),
-    "angular.json": "{}",
-    "src/app/app.component.ts": (
-        "import { Component } from '@angular/core';\n"
-        "@Component({ selector: 'app-root', template: '<main>hi</main>' })\n"
-        "export class AppComponent {}\n"
-    ),
-}
-
 MIXED_APP = {
     "manage.py": "#!/usr/bin/env python",
     "requirements.txt": "django==5\n",
@@ -131,14 +117,13 @@ def main():
             "react": write_project(base, "react-app", REACT_APP),
             "vue": write_project(base, "vue-app", VUE_APP),
             "nuxt": write_project(base, "nuxt-app", NUXT_APP),
-            "angular": write_project(base, "angular-app", ANGULAR_APP),
             "mixed": write_project(base, "mixed-app", MIXED_APP),
         }
         for name, root in projects.items():
             check("generated %s sample" % name, (root / "package.json").is_file() or (root / "manage.py").is_file())
 
         # Session 2 — stack detection end to end
-        expected = {"react": ["react"], "vue": ["vue"], "nuxt": ["nuxt"], "angular": ["angular"]}
+        expected = {"react": ["react"], "vue": ["vue"], "nuxt": ["nuxt"]}
         for name, stack_ids in expected.items():
             found = [item["id"] for item in craft_stack.detect(str(projects[name]))]
             check("%s sample detects %s" % (name, stack_ids), found == stack_ids, found)

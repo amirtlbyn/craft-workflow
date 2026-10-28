@@ -96,15 +96,7 @@ def main():
         found = detect_frontend(cli)
         check("vue-cli build tool", [(r.framework, r.build_tools) for r in found] == [("vue", ("vue-cli",))], found)
 
-        # Session 3 — Angular
-        angular = project(base / "ng-app", {
-            "package.json": manifest({"@angular/core": "18"}),
-            "angular.json": "{}",
-        })
-        found = detect_frontend(angular)
-        check("angular detected", [r.framework for r in found] == ["angular"], found)
-
-        # Session 4 — build tools + edge cases
+        # Session 3 — build tools + edge cases
         webpack = project(base / "wp-app", {
             "package.json": manifest(dev_dependencies={"webpack": "5"}),
             "webpack.config.cjs": "module.exports = {};",

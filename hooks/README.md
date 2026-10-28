@@ -33,6 +33,7 @@ ZCode reads `hooks/hooks.json` only, through `.zcode-plugin/plugin.json`.
 |---|---|---|
 | `scripts/gate_spec.py` | `PreToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit` | On `task` and `project`, no source or test file is written until the developer approves `spec.md` at its current SHA-256, and no test file until `scenarios.md` is approved too |
 | `scripts/protect_human_owned.py` | `PreToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit` | A `*.human.md` document cannot be edited by an agent |
+| `scripts/component_gate.py` | `PreToolUse` on `Write\|Edit\|MultiEdit\|NotebookEdit` | On frontend component files, blocks missing component definitions, listener leaks, and newly introduced raw hex styling |
 | `scripts/verify_gates.py` | `Stop` | A claim of `done` or Gate A needs a green checkpoint, an approved spec, and a green trace |
 | `scripts/session_context.py` | `SessionStart` | A new session sees the active spec, its state, and its next task |
 | `scripts/jev_approve.py` | `PreToolUse` on `Bash\|Write\|Edit\|MultiEdit\|NotebookEdit` | Optional, off by default. With `craft-jev on` and `craft-jev approve on`, Jev approves routine calls. It never approves what the lists in `config/jev.json` say to ask about, and it stays silent whenever another craft hook would deny |

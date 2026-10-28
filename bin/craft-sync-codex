@@ -114,8 +114,8 @@ application.
 - `standards/` holds the vendored engineering standards every skill and
   reviewer reads.
 - `hooks/` holds the Claude Code hooks this plugin enforces, not just
-  requests: the spec gate, `*.human.md` protection, the done/Gate-A check,
-  and the session-start status. Codex CLI does not run them yet - see
+  requests: the spec gate, `*.human.md` protection, the component gate, the
+  done/Gate-A check, and the session-start status. Codex CLI does not run them yet - see
   "Codex support" below.
 - `hooks/mod/` is a Claude Code mod (`hooks/mod.json`, named by
   `.claude-plugin/plugin.json`): the status, the craft board, cost per agent.
@@ -138,9 +138,9 @@ Hand-editing a generated file is overwritten on the next `--write`, and
 ## Codex support - what works today
 
 Skills, commands, and subagents are available to Codex through the generated
-mirror. The three hook-enforced gates - `*.human.md` protection, the spec
-gate, and the done/Gate-A verification at session end - run only under
-Claude Code and ZCode today. The `bin/` commands (`craft-spec`,
+mirror. The four hook-enforced gates - `*.human.md` protection, the spec
+gate, the component gate, and the done/Gate-A verification at session end - run
+only under Claude Code and ZCode today. The `bin/` commands (`craft-spec`,
 `craft-approve`, `craft-check`, `craft-std`) work the same under every tool.
 A Codex session can still follow the same workflow as prose, but nothing
 blocks it from skipping a gate the way the Claude Code hooks do. Do not tell a developer these gates are enforced under Codex until

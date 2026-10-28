@@ -103,7 +103,11 @@ def _dependency_names(base: Path) -> set[str]:
 
 
 def analyze_bundle(project: str | Path = ".") -> BundleReport:
-    """Inventory source bytes and flag oversized trees against the spec thresholds."""
+    """Inventory source bytes as a build-size proxy against spec thresholds.
+
+    This static analyzer does not run a bundler, so the measured source tree is
+    not the generated bundle output.
+    """
 
     base = Path(project).resolve()
     sizes: list[tuple[str, int]] = []
@@ -142,6 +146,7 @@ ASSET_BUDGETS = {
     ".otf": 150_000, ".mp4": 2_000_000, ".webm": 2_000_000,
 }
 MODERN_IMAGE_FORMATS = (".webp", ".avif")
+LEGACY_IMAGE_HINT_BYTES = 100_000
 
 
 @dataclass(frozen=True)
@@ -171,7 +176,7 @@ def analyze_assets(project: str | Path = ".", min_size=4_000) -> list[AssetIssue
         budget = ASSET_BUDGETS.get(suffix)
         if budget is not None and size > budget:
             issues.append(AssetIssue(relative, size, "%s asset is %d bytes, budget is %d" % (suffix, size, budget)))
-        elif suffix in (".png", ".jpg", ".jpeg", ".gif") and size > 100_000:
+        elif suffix in (".png", ".jpg", ".jpeg", ".gif") and size > LEGACY_IMAGE_HINT_BYTES:
             issues.append(AssetIssue(relative, size,
                                      "%s asset is %d bytes; consider webp or avif" % (suffix, size)))
     issues.sort(key=lambda issue: -issue.size)
@@ -213,10 +218,12 @@ def analyze_splitting(project: str | Path = ".") -> SplittingReport:
     """Detect lazy-loading usage and route pages that load eagerly."""
 
     base = Path(project).resolve()
+    entry_count = 0
     lazy_count = 0
     routes: list[str] = []
     route_pages = 0
     for relative, path in _iter_sources(base):
+        entry_count += 1
         text = _read(path)
         if not text:
             continue
@@ -233,7 +240,7 @@ def analyze_splitting(project: str | Path = ".") -> SplittingReport:
     suggestions = []
     if unsplit:
         suggestions.append("route pages load eagerly: add dynamic import() or React.lazy() for below-the-fold pages")
-    return SplittingReport(lazy_count, lazy_count, route_pages, unsplit, tuple(suggestions))
+    return SplittingReport(entry_count, lazy_count, route_pages, unsplit, tuple(suggestions))
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +249,12 @@ def analyze_splitting(project: str | Path = ".") -> SplittingReport:
 
 BARE_IMPORT = re.compile(r"""(?:^|\n)\s*import\s+(?:[\w*{},\s]+\s+from\s+)?['"]([^'".][^'"]*)['"]""")
 SIDE_EFFECT_REQUIRE = re.compile(r"""\brequire\s*\(\s*['"]([^'".][^'"]*)['"]""")
+
+
+def _package_root(specifier: str) -> str:
+    """Return the manifest-comparable root for a package specifier."""
+    parts = specifier.split("/")
+    return "/".join(parts[:2]) if specifier.startswith("@") else parts[0]
 
 
 @dataclass(frozen=True)
@@ -271,12 +284,10 @@ def analyze_tree_shaking(project: str | Path = ".") -> list[UnusedDependency]:
         text = _read(path, 128 * 1024)
         for match in BARE_IMPORT.finditer(text):
             specifier = match.group(1)
-            parts = specifier.split("/")
-            imported_roots.add("/".join(parts[:2]) if specifier.startswith("@") else parts[0])
+            imported_roots.add(_package_root(specifier))
         for match in SIDE_EFFECT_REQUIRE.finditer(text):
             specifier = match.group(1)
-            parts = specifier.split("/")
-            imported_roots.add("/".join(parts[:2]) if specifier.startswith("@") else parts[0])
+            imported_roots.add(_package_root(specifier))
 
     unused: list[UnusedDependency] = []
     for section in ("dependencies", "devDependencies"):
@@ -284,7 +295,7 @@ def analyze_tree_shaking(project: str | Path = ".") -> list[UnusedDependency]:
         if not isinstance(values, dict):
             continue
         for name in values:
-            root = "/".join(name.split("/")[:2]) if name.startswith("@") else name.split("/")[0]
+            root = _package_root(name)
             if root not in imported_roots:
                 unused.append(UnusedDependency(name, section))
     unused.sort(key=lambda item: item.name)

@@ -87,17 +87,6 @@ context providers). Follow what is there; repository standards win.
 - Vue Query (`useQuery`/`useMutation`) for server state, same rule: never
   mirrored into a store.
 
-## Angular patterns
-
-- Services are the stores: `providedIn: 'root'` singletons exposing state via
-  `BehaviorSubject` or Angular signals (`signal`, `computed`).
-- RxJS: state streams with `scan`/`distinctUntilChanged`; subscriptions in
-  components use the `async` pipe or `takeUntilDestroyed`.
-- NgRx for large apps with time-travel needs; `createSelector` for derived
-  state, effects only for side effects. Akita follows the same discipline with
-  less ceremony — pick one, not both.
-- Angular Query for server state when RxJS is not already the house style.
-
 ## Review checklist
 
 - State lives in the smallest scope that works; no store created for one

@@ -102,7 +102,7 @@ def main():
         # FRONTEND_STACKS are routed in config/workflow.md (doc regression).
         workflow = (ROOT / "config" / "workflow.md").read_text(encoding="utf-8")
         workflow_lines = workflow.splitlines()
-        FRONTEND_STACKS = ("react", "vue", "nuxt", "angular")
+        FRONTEND_STACKS = ("react", "vue", "nuxt")
 
         def row_of(marker, source=workflow_lines):
             return next((line for line in source if marker in line), "")

@@ -95,16 +95,6 @@ there; repository standards win when they are more specific.
 - Slots before boolean props; scoped slots when the child needs to hand data
   back for rendering.
 
-## Angular patterns
-
-- `OnPush` change detection on every new component; immutable inputs keep it
-  sound.
-- `trackBy` on every `*ngFor` over a collection that can change identity.
-- Pure pipes for transformations; pipes are stateless unless documented.
-- Subscriptions are torn down: `takeUntilDestroyed` or a `Subscription`
-  collected and unsubscribed in `ngOnDestroy`. `async` pipe where possible.
-- Constructor injection with typed tokens; no `Injector.get` service location.
-
 ## Review checklist
 
 - One responsibility, no orphan props, no boolean-prop explosion.

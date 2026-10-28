@@ -71,7 +71,7 @@ one there before adding styles — do not decide per component.
   is camelCase so `styles.primaryButton` reads in templates.
 - SCSS: nesting max 3 levels deep, `&` for modifiers only, variables and
   mixins imported from a tokens partial. Less follows the same rules.
-- BEM where global CSS survives (Angular apps, legacy pages):
+- BEM where global CSS survives (legacy pages, design-system resets):
   `block__element--modifier`, one block per file, no descendant selectors
   deeper than one level.
 - Theming with CSS custom properties: tokens defined at `:root`, theme

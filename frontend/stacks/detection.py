@@ -28,7 +28,6 @@ FRAMEWORK_PACKAGES = {
     "react": ("react",),
     "vue": ("vue",),
     "nuxt": ("nuxt", "nuxt-nightly", "@nuxt/framework"),
-    "angular": ("@angular/core",),
 }
 
 BUILD_TOOL_FILES = {
@@ -63,9 +62,8 @@ def _framework(packages: set[str]) -> tuple[str, tuple[str, ...]] | None:
     matches = [(name, names) for name, names in FRAMEWORK_PACKAGES.items() if any(pkg in packages for pkg in names)]
     if not matches:
         return None
-    # Angular's package name is unique; preserve an explicit priority if a
-    # hybrid package accidentally includes more than one framework.
-    priority = {"nuxt": 4, "angular": 3, "vue": 2, "react": 1}
+    # Frameworks share packages (vue inside nuxt); resolve hybrids explicitly.
+    priority = {"nuxt": 4, "vue": 2, "react": 1}
     return max(matches, key=lambda item: priority[item[0]])
 
 

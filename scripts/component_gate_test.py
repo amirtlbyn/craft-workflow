@@ -45,16 +45,14 @@ def main():
     clean = leaky.replace("return null;", "return () => window.removeEventListener('resize', onResize);")
     check("teardown present passes",
           "listener-teardown" not in component_gate.violations(clean, ".tsx"))
-    angular_clean = ("export class X { constructor() { this.sub = s.subscribe(fn); } "
-                     "ngOnDestroy() { this.sub.unsubscribe(); } }")
-    check("angular ngOnDestroy accepted",
-          "listener-teardown" not in component_gate.violations(angular_clean, ".ts"))
     check("teardown rule only on component files",
           component_gate.violations(leaky, ".ts") == [])
 
     # Rule: raw hex in inline styles.
     hexy = '<template><div style="color: #ff0000">x</div></template>'
     check("raw hex denied", "raw-hex-style" in component_gate.violations(hexy, ".vue"))
+    check("existing raw hex remains allowed",
+          component_gate.violations(hexy, ".vue", existing_text=hexy) == [])
     token = '<template><div :style="{ color: token }">x</div></template>'
     check("token style passes", component_gate.violations(token, ".vue") == [])
 
@@ -62,6 +60,7 @@ def main():
     # the test writes the session marker craft_state.is_active looks for.
     with tempfile.TemporaryDirectory() as tmp:
         base = pathlib.Path(tmp)
+        (base / ".git").mkdir()
         (base / "package.json").write_text(json.dumps({"dependencies": {"react": "19"}}))
         craft_dir = base / ".claude" / "craft"
         craft_dir.mkdir(parents=True)
@@ -76,6 +75,38 @@ def main():
         payload["tool_input"]["content"] = ok_component
         decision, reason = component_gate.decide(payload)
         check("gate allows valid component", decision == "allow", reason[:80])
+
+        # An Edit supplies only the replacement fragment, not the full file.
+        button = base / "src" / "Button.tsx"
+        button.parent.mkdir(parents=True)
+        button.write_text("export default function Button() { return <button />; }", encoding="utf-8")
+        edit_payload = {
+            "tool_name": "Edit",
+            "cwd": str(base),
+            "tool_input": {
+                "file_path": str(button),
+                "old_string": "<button />",
+                "new_string": '<button className="primary" />',
+            },
+        }
+        decision, reason = component_gate.decide(edit_payload)
+        check("edit fragment keeps existing component valid", decision == "allow", reason[:80])
+
+        raw_payload = {
+            "tool_name": "Write",
+            "cwd": str(base),
+            "tool_input": {
+                "file_path": str(base / "src" / "Palette.vue"),
+                "content": hexy,
+            },
+        }
+        decision, reason = component_gate.decide(raw_payload)
+        check("new raw hex denied by gate", decision == "deny", reason[:80])
+        palette = base / "src" / "ExistingPalette.vue"
+        palette.write_text(hexy, encoding="utf-8")
+        raw_payload["tool_input"]["file_path"] = str(palette)
+        decision, reason = component_gate.decide(raw_payload)
+        check("existing raw hex allowed by gate", decision == "allow", reason[:80])
 
         # Non-frontend repository stays inert.
         plain = pathlib.Path(tempfile.mkdtemp())

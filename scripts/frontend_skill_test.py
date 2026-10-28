@@ -25,7 +25,6 @@ SKILL_REQUIREMENTS = {
         "framework_sections": {
             "react": ["memo", "usecallback", "usememo", "hook"],
             "vue": ["composition api", "computed", "watch", "slot"],
-            "angular": ["onpush", "trackby", "pipe", "unsubscribe"],
         },
         "core": ["prop", "composition", "accessibility", "testing"],
     },
@@ -33,7 +32,6 @@ SKILL_REQUIREMENTS = {
         "framework_sections": {
             "react": ["usestate", "usereducer", "context", "zustand", "tanstack"],
             "vue": ["ref", "computed", "pinia", "vuex"],
-            "angular": ["rxjs", "ngrx", "service"],
         },
         "core": ["server state", "derived", "testing", "performance"],
     },
@@ -41,7 +39,6 @@ SKILL_REQUIREMENTS = {
         "framework_sections": {
             "react": ["css-in-js", "styled", "emotion", "theme"],
             "vue": ["scoped", "sfc"],
-            "angular": ["scss", "bem"],
         },
         "core": ["utility", "css modules", "design system", "responsive", "accessibility"],
     },
@@ -81,7 +78,7 @@ def main():
 
     # Routing: each frontend stack pack must list the skills, and every named
     # skill must exist on disk so the routing does not dangle.
-    for stack_id in ("react", "vue", "nuxt", "angular"):
+    for stack_id in ("react", "vue", "nuxt"):
         data = craft_stack.pack(stack_id)
         skills = data.get("skills") or []
         check("%s pack lists frontend skills" % stack_id, "component-design" in skills, skills)

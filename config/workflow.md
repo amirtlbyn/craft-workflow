@@ -32,8 +32,8 @@ stack adds its own standard, named in its `stacks/<id>/stack.json`:
 `fastapi_standards.ai.md`, `go_standards.ai.md`, `java_standards.ai.md`,
 `node_standards.ai.md`, `php_standards.ai.md`. The frontend stacks add
 `component_design_standards.ai.md`, `frontend_performance_standards.ai.md`, and
-`accessibility_standards.ai.md`, which apply to the `react`, `vue`, `nuxt`, and
-`angular` stacks. They are bot-maintainable until a team renames one to
+`accessibility_standards.ai.md`, which apply to the `react`, `vue`, and
+`nuxt` stacks. They are bot-maintainable until a team renames one to
 `.human.md`. `technical_standards` TS-1 to TS-5 apply to every stack that owns a
 database.
 
@@ -203,7 +203,6 @@ own. The `craft` skill uses this table as its routing map.
 | React component code | `component-design` plus `state-management` and `styling-discipline` |
 | Nuxt code: pages, composables, server routes, SSR | `nuxt-ssr-data` plus `component-design` and `state-management` |
 | Vue component code | `component-design` plus `state-management` and `styling-discipline` |
-| Angular component code | `component-design` plus `state-management` and `styling-discipline` |
 | PHP code: Laravel, Symfony, Composer packages | `php-practices` |
 | Concurrent code for throughput, or a request for "async", "parallel", "high concurrency", "faster" | `concurrency` first. It loads the stack's own skill only when the system is built for it |
 | async code in a FastAPI service the concurrency report calls ready | `fastapi-async` |
@@ -291,7 +290,6 @@ gets one stack per service. Each stack is a pack in `stacks/<id>/stack.json`:
 | 🟩 `nuxt` | `nuxt.config.*`, or `nuxt` in the dependencies | `component-design`, `state-management`, `styling-discipline`, `nuxt-ssr-data` | the model the report names |
 | 💚 `vue` | `vue` in the dependencies | `component-design`, `state-management`, `styling-discipline` | the model the report names |
 | ⚛️ `react` | `react` in the dependencies | `component-design`, `state-management`, `styling-discipline` | the model the report names |
-| 🅰️ `angular` | `@angular/core` in the dependencies | `component-design`, `state-management`, `styling-discipline` | the model the report names |
 | 🟥 `laravel` | `artisan`, or `laravel/framework` | `php-practices` | the model the report names |
 | 🎼 `symfony` | `symfony/framework-bundle` | `php-practices` | the model the report names |
 | 🐘 `php` | any `composer.json` | `php-practices` | the model the report names |

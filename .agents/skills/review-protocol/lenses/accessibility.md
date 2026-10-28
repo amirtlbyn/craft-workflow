@@ -50,7 +50,3 @@ detected stack's own notes. Per stack:
 - **Nuxt** — SSR output must be accessible before hydration: semantics and
   labels render on the server; `<ClientOnly>` regions ship their own fallback
   that is not a focus hole.
-- **Angular** — Route and form accessibility: `ReactiveForms` controls get
-  labels and error announcements; Angular Material components keep their
-  built-in a11y (do not override roles away); use the CDK a11y utilities for
-  focus trap and live announcer.

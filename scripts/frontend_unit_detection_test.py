@@ -144,10 +144,10 @@ def main():
                    if not (craft_stack.PLUGIN_ROOT / "skills" / name / "SKILL.md").exists()]
         check("skills_for omits skills without files", not missing, missing)
 
-        # --- angular ---------------------------------------------------------
+        # --- angular is no longer a supported frontend stack ---------------
         angular = project(base / "ng-app", {"package.json": manifest({"@angular/core": "^18.0.0"})})
-        check("angular project detected",
-              [r.framework for r in detect_frontend(angular)] == ["angular"],
+        check("angular is not detected as a frontend stack",
+              [r.framework for r in detect_frontend(angular)] == [],
               detect_frontend(angular))
 
 
