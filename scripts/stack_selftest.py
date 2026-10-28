@@ -482,6 +482,22 @@ def test_ui_state():
     check(group, "a confirmed critical requests changes", data["gate_b"]["state"], "changes requested")
 
 
+def run_script(relative, cwd=None):
+    finished = subprocess.run([sys.executable, str(ROOT / relative)], cwd=str(cwd or ROOT),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    return finished.returncode, finished.stdout.decode("utf-8", errors="replace")
+
+
+def test_frontend_units():
+    group = "frontend units"
+    for relative, label in (("scripts/frontend_unit_detection_test.py", "detection"),
+                            ("scripts/frontend_unit_analyzer_test.py", "analyzer")):
+        code, out = run_script(relative)
+        passed = len([line for line in out.splitlines() if line.lstrip().startswith("ok  ")])
+        check(group, "%s suite exits 0 with every check green" % label, (code, "FAIL  " in out), (0, False))
+        check(group, "%s suite check count" % label, passed, 18 if label == "detection" else 11)
+
+
 def report():
     failed = [item for item in results if not item["passed"]]
     current = None
@@ -501,7 +517,7 @@ def report():
 def main():
     try:
         for test in (test_stacks, test_checks, test_concurrency, test_trace, test_craft_check,
-                     test_deciders, test_jev_floor, test_ui_state):
+                     test_deciders, test_jev_floor, test_ui_state, test_frontend_units):
             try:
                 test()
             except Exception as error:  # a crashing group is a failing group
