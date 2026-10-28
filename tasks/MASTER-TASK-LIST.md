@@ -1,7 +1,7 @@
 # Master Task List - Frontend Rewrite
 
 ## Overview
-Total Tasks: 11 project files · Estimated Sessions: 37 · Total Subtasks: ~350
+Total Tasks: 10 in-scope project files · Estimated Sessions: 37 · Total Subtasks: ~350
 
 ## Phase 1: Foundation Layer (Month 1-2)
 
@@ -72,7 +72,7 @@ Total Tasks: 11 project files · Estimated Sessions: 37 · Total Subtasks: ~350
 - **Key**: CGT-1
 - **Sessions**: 5
 - **Subtasks**: 35
-- **Status**: ✅ Done
+- **Status**: ⚠️ Done (scoped) — gate enforces 3 rules (no-component, listener-teardown, raw-hex-style); spec §5.2's verify_props_interface / verify_storybook_integration deferred to the component review lens
 - **Dependencies**: CRL-1, ARL-1 complete
 
 ## Integration Phase
@@ -101,22 +101,27 @@ Total Tasks: 11 project files · Estimated Sessions: 37 · Total Subtasks: ~350
 ```
 Phase 1: 2/2 completed (100%)
 Phase 2: 3/3 completed (100%)
-Phase 3: 2/2 completed (100%)
-Phase 4: 1/1 completed (100%)
+Phase 3: 2/2 planned lenses completed (100%); performance/mobile lenses deferred
+Phase 4: 1/1 planned gate completed (100%); bundle/accessibility gates deferred
 Integration: 1/1 completed (100%)
 Testing: 1/1 completed (100%)
-Overall: 10/11 completed (91%)
+Overall: 10/10 in-scope tasks completed (100%); Svelte/SolidJS/Qwik expansion deferred
+
+Deferred (documented, not built): Lighthouse CI integration (BTI-5 T28),
+frameworks→skills mapping (FSD-1 T4), gate prop/storybook verification (CGT-1),
+bundle/accessibility gates, performance/mobile lenses
 ```
 
-Note: item 11 of 11 in the plan was Svelte/SolidJS/Qwik expansion, deferred
-by design (frontend-rewrite-plan.md: "Start with React/Vue, expand based on
-demand"). All 10 in-scope task files are done and verified.
+Note: the deferred expansion beyond the 10 in-scope task files covers
+Svelte/SolidJS/Qwik support, as described in frontend-rewrite-plan.md: "Start
+with React/Vue, expand based on demand." All 10 in-scope task files are done
+and verified.
 
 ### Completion Criteria
 - [x] Phase 1: Stack detection & build tools working
 - [x] Phase 2: All frontend skills developed and tested
-- [x] Phase 3: Review lenses implemented and validated
-- [x] Phase 4: Frontend gates enforcing requirements
+- [x] Phase 3: Component/accessibility lenses implemented; performance/mobile deferred
+- [x] Phase 4: Component gate implemented; bundle/accessibility gates deferred
 - [x] Integration: Seamless integration with craft-workflow
 - [x] Testing: Comprehensive test coverage achieved
 

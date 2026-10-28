@@ -17,7 +17,7 @@ State: done · Covers: BTI-1
 - [x] T3 — Implement vite-bundle-analyzer integration — BTI-1 (same static inventory, tool-agnostic)
 - [x] T4 — Create bundle size reporting module — BTI-1 (`BundleReport.as_dict`)
 - [x] T5 — Implement threshold checks (warning/error levels) — BTI-1 (spec §7.1: 500KB warn / 2MB error)
-- [x] T6 — Write tests for bundle analyzer — BTI-1 (`tests/test_frontend_build_analyzer.py`)
+- [x] T6 — Write tests for bundle analyzer — BTI-1 (`scripts/frontend_unit_analyzer_test.py`)
 - [x] T7 — Test with sample webpack project — BTI-1 (checkpoint script, webpack project fixture)
 
 ## Session 2 — Asset Optimization Integration
@@ -59,7 +59,7 @@ State: done · Covers: BTI-4
 State: done · Covers: BTI-5
 
 - [x] T27 — Create performance monitoring module — BTI-5 (`analyze_performance` / `PerformanceReport`)
-- [x] T28 — Implement Lighthouse CI integration — BTI-5 (spec §7.2 documents the command; hook stays static and read-only)
+- [ ] T28 — Implement Lighthouse CI integration — BTI-5 (DEFERRED: spec §7.2 command is documented, not implemented; analyzer.py is a static inventory only)
 - [x] T29 — Implement Web Vitals monitoring — BTI-5 (static risk audit: render-blocking, sync scripts, CLS-risk images, web-vitals instrumentation)
 - [x] T30 — Create performance reporting dashboard — BTI-5 (`PerformanceReport.as_dict`)
 - [x] T31 — Write tests for performance monitoring — BTI-5

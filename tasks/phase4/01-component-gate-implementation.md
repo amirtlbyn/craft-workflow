@@ -2,6 +2,10 @@
 
 Spec: frontend-technical-spec.md · Key: CGT-1 · Route: project · State: done
 
+Scope note: Done (scoped) — the gate enforces 3 rules (no-component,
+listener-teardown, raw-hex-style); spec §5.2's verify_props_interface /
+verify_storybook_integration are deferred to the component review lens.
+
 Checkpoint: `bin/craft-check -- python3 scripts/component_gate_test.py`
 
 The gate lives at `scripts/component_gate.py`, registered as a PreToolUse hook

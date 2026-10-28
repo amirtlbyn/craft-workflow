@@ -11,8 +11,8 @@ State: done · Covers: FSD-1
 - [x] T1 — Create frontend stack detection module in `frontend/stacks/detection.py` — FSD-1
 - [x] T2 — Implement React detection logic (package.json contains react) — FSD-1
 - [x] T3 — Create React stack configuration `frontend/stacks/react/stack.json` — FSD-1 (shipped as the unified `stacks/react/stack.json` pack)
-- [x] T4 — Implement framework detection (Next.js, Remix, Vite) — FSD-1
-- [x] T5 — Write tests for React stack detection in `tests/frontend/test_stack_detection.py` — FSD-1 (shipped as `tests/test_frontend_detection.py`)
+- [x] T4 — Implement framework detection (Next.js, Remix, Vite) — FSD-1 (detection only; spec §2 frameworks→skills mapping is NOT wired — no stack.json has a `frameworks` key)
+- [x] T5 — Write tests for React stack detection in `tests/frontend/test_stack_detection.py` — FSD-1 (shipped as `scripts/frontend_unit_detection_test.py`)
 - [x] T6 — Update `bin/craft-stack` to include frontend stack detection — FSD-1 (via `scripts/craft_stack.py` pack detection)
 - [x] T7 — Test detection with sample React project — FSD-1
 

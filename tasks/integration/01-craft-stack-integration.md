@@ -18,7 +18,7 @@ State: done · Covers: CSI-1
 - [x] T3 — Create frontend stack detection in existing detection logic — CSI-1 (`frontend/stacks/detection.py` + pack `detect` rules)
 - [x] T4 — Update stack reporting to include frontend stacks — CSI-1 (detect output shows frontend packs with evidence)
 - [x] T5 — Implement mixed stack detection (fullstack projects) — CSI-1 (checkpoint: django + react, path ownership per directory)
-- [x] T6 — Write integration tests for frontend stack detection — CSI-1 (checkpoint + tests/test_frontend_detection.py)
+- [x] T6 — Write integration tests for frontend stack detection — CSI-1 (checkpoint + `scripts/frontend_unit_detection_test.py`)
 - [x] T7 — Test with sample fullstack project — CSI-1
 
 ## Session 2 — craft-stack skills Integration
