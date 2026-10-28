@@ -41,6 +41,63 @@ context providers). Follow what is there; repository standards win.
   who writes it, where it is validated, and that it is never trusted from the
   client. A client-side store is a convenience cache, not a source of truth.
 
+## Performance
+
+- State slicing: a store exposes slices; a component subscribes to the slice
+  it renders, not the store.
+- Derived values are computed or selector-based (`reselect` for Redux);
+  memoize the selector, not the component.
+- Batch updates: group mutations that would each trigger a render (React 18
+  batches automatically; Pinia/Vuex actions batch naturally).
+- Persisted state (localStorage, cookies) is opt-in per slice, versioned, and
+  never holds auth tokens or secrets.
+
+## Testing state
+
+- Test state transitions (initial -> loaded -> error -> recovered), not
+  implementation details of the store.
+- Server state is mocked at the fetch layer; a test never depends on network.
+- Side effects (invalidation, refetch, optimistic update + rollback) each get
+  a test naming the trigger.
+- Persistence round-trips: serialize, restore, assert the store state.
+
+## React patterns
+
+- `useState` for local, `useReducer` when transitions have named actions or
+  the next state depends on the previous one.
+- Context for low-frequency global values; high-frequency updates belong in a
+  store (`zustand`, Redux Toolkit) or co-located state.
+- `zustand`: one store per domain, selectors at the call site
+  (`useStore(s => s.slice)`), never destructuring the whole store in a render.
+- TanStack Query owns server state: stale times stated, invalidations keyed,
+  optimistic updates carry an `onError` rollback.
+- Jotai/Recoil atoms stay fine-grained; derived atoms instead of derived
+  duplicates.
+
+## Vue patterns
+
+- `ref` for single values, `reactive` for composed objects — never
+  destructuring a `reactive` object (loses reactivity).
+- `computed` for every derived value; a `watch` writing to another ref is a
+  `computed` waiting to be found.
+- Pinia: `defineStore` per domain, setup-style stores with `ref`/`computed`;
+  state mutated through actions in dev, `storeToRefs` when destructuring.
+- Vuex is legacy: new stores are Pinia; a Vuex migration goes through the
+  report, module by module, and never mixes both for one domain.
+- Vue Query (`useQuery`/`useMutation`) for server state, same rule: never
+  mirrored into a store.
+
+## Angular patterns
+
+- Services are the stores: `providedIn: 'root'` singletons exposing state via
+  `BehaviorSubject` or Angular signals (`signal`, `computed`).
+- RxJS: state streams with `scan`/`distinctUntilChanged`; subscriptions in
+  components use the `async` pipe or `takeUntilDestroyed`.
+- NgRx for large apps with time-travel needs; `createSelector` for derived
+  state, effects only for side effects. Akita follows the same discipline with
+  less ceremony — pick one, not both.
+- Angular Query for server state when RxJS is not already the house style.
+
 ## Review checklist
 
 - State lives in the smallest scope that works; no store created for one

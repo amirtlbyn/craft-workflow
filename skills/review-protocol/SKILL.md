@@ -26,6 +26,8 @@ second.
 | `security` | Application security only | Critical | 0.5 |
 | `query` | Database access cost only | High | 0.7 |
 | `concurrency` | Concurrent code for throughput, and whether the system was built for its model | High | 0.6 |
+| `component` | Frontend component contracts: props/emits, reactivity and hooks, render states, teardown, measured memoization | High | 0.7 |
+| `accessibility` | Frontend accessibility: semantics, keyboard, focus, announcements, forms, contrast, motion | Critical | 0.8 |
 
 **Stack notes.** The lens files are written for Django first. When the diff is
 in another stack, run `<plugin root>/bin/craft-stack lens <lens> --paths <the

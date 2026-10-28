@@ -44,6 +44,51 @@ one there before adding styles — do not decide per component.
 - `standards/accessibility_standards.ai.md` holds the detail:
   `bin/craft-std accessibility_standards --list`.
 
+## CSS-in-JS (React)
+
+- Styled Components / Emotion: styles live beside the component, props-driven
+  variants over class strings, and the theme comes from `ThemeProvider` —
+  never a hardcoded palette inside a styled block.
+- Dynamic styling goes through CSS custom properties on the wrapper, not
+  interpolated strings that generate thousands of classes.
+- Server-rendered React needs the styling library's SSR extraction configured;
+  a flash of unstyled content is a bug, not a quirk.
+- Performance: avoid style recalculation storms — stable class names over
+  per-render unique ones.
+
+## Utility CSS (Tailwind, UnoCSS)
+
+- Utilities compose layout; repeated groups of 4+ utilities become an
+  extracted component or an `@apply` rule with a role name.
+- Custom configuration (colors, spacing, breakpoints) lives in the theme
+  config, mapped to design tokens. Arbitrary values (`w-[137px]`) are a smell:
+  register the token instead.
+- No `!important` utilities to win specificity wars — fix the layer order.
+
+## CSS Modules, SCSS/Less, and methodology
+
+- CSS Modules for component-scoped classes in React/Vue SFCs; the class name
+  is camelCase so `styles.primaryButton` reads in templates.
+- SCSS: nesting max 3 levels deep, `&` for modifiers only, variables and
+  mixins imported from a tokens partial. Less follows the same rules.
+- BEM where global CSS survives (Angular apps, legacy pages):
+  `block__element--modifier`, one block per file, no descendant selectors
+  deeper than one level.
+- Theming with CSS custom properties: tokens defined at `:root`, theme
+  variants override tokens, components consume `var(--token)`.
+
+## Design systems
+
+- MUI, Chakra, Ant Design: use the system's tokens and components before
+  writing custom CSS; theme overrides go in the theme file, not ad-hoc style
+  props. Wrapping a third-party component in an app-specific component keeps
+  the swap-out path open.
+- A custom design system exposes tokens (colors, spacing, type scale) and
+  primitives (Button, Input, Modal) in one importable module; app code never
+  reaches into a primitive's internals.
+- Adding a design system (or a second one) is an architecture decision: it
+  goes through `config/workflow.md` and the report.
+
 ## Review checklist
 
 - New styles use the repo's one paradigm; no new styling library appeared.

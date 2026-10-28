@@ -43,9 +43,71 @@ there; repository standards win when they are more specific.
 - `styling-discipline` decides how styles are written; this skill only says
   they stay inside the component's boundary.
 
+## Accessibility
+
+- Interactive elements are semantic HTML first (`button`, `a`, `input`); ARIA
+  only where semantics cannot say it.
+- Every interactive element is keyboard operable with a visible focus state.
+- Loading, error, and empty states are announced (`aria-live`, `role=status`)
+  rather than only visual.
+
+## Performance
+
+- Measure before memoizing. React: `React.memo` for pure components that
+  re-render on unrelated state, `useCallback`/`useMemo` only for work that is
+  actually expensive or referentially required. Vue: `computed` over methods
+  in templates; a watcher is a last resort.
+- Lists render a bounded window or paginate before any virtualization is
+  introduced.
+- No new subscription, observer, or listener without a teardown.
+
+## Testing
+
+- A component test asserts the contract: props in, emitted events out, and the
+  rendered result the user sees — not internal state.
+- Test the state transitions of the component (empty, loading, error,
+  success), one test per transition.
+- Accessibility is part of the test: role and label queries before class or
+  test-id queries.
+
+## React patterns
+
+- Follow the Rules of Hooks: no conditional hooks, complete dependency arrays.
+- `React.memo` for pure components; `useCallback` for handlers passed to
+  memoized children; `useMemo` for genuinely expensive derivations.
+- Custom hooks own reusable logic: one concern per hook, named `useThing`,
+  returning a tuple or object documented at the hook.
+- Context for genuinely global cross-tree values (theme, session) — not to
+  avoid drilling props two levels.
+- Error boundaries wrap critical subtrees; one boundary per page region is
+  enough.
+
+## Vue patterns
+
+- `<script setup>` with the Composition API. `computed` for derived values,
+  never a manual ref synced by a watcher.
+- Watchers: `watch` with explicit sources and an `immediate`/`deep` decision
+  written down; side-effect watchers clean up with `onScopeDispose`.
+- `provide`/`inject` only for component-library internals or theming, with the
+  injection key typed and exported.
+- Slots before boolean props; scoped slots when the child needs to hand data
+  back for rendering.
+
+## Angular patterns
+
+- `OnPush` change detection on every new component; immutable inputs keep it
+  sound.
+- `trackBy` on every `*ngFor` over a collection that can change identity.
+- Pure pipes for transformations; pipes are stateless unless documented.
+- Subscriptions are torn down: `takeUntilDestroyed` or a `Subscription`
+  collected and unsubscribed in `ngOnDestroy`. `async` pipe where possible.
+- Constructor injection with typed tokens; no `Injector.get` service location.
+
 ## Review checklist
 
 - One responsibility, no orphan props, no boolean-prop explosion.
 - Props typed, emits typed, nothing mutates a prop.
 - Slots used where structure varies; shared extraction justified by a third use.
 - Rename of a `components/` file came with a project-wide usage grep.
+- Keyboard operable, focus visible, async states announced.
+- Memoization measured, teardown present, tests assert the contract.

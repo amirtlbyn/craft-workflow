@@ -24,6 +24,11 @@
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/gate_spec.py",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/component_gate.py",
+            "timeout": 10
           }
         ]
       },

@@ -93,3 +93,45 @@ def test_skills_for_omits_skills_without_files(tmp_path, monkeypatch):
     assert skills, "expected the nuxt pack to list skills"
     for name in skills:
         assert (craft_stack.PLUGIN_ROOT / "skills" / name / "SKILL.md").exists(), name
+
+
+def test_angular_project_detected(tmp_path):
+    root = project(tmp_path, {"package.json": json.dumps({"dependencies": {"@angular/core": "^18.0.0"}})})
+    assert [item.framework for item in detect_frontend(root)] == ["angular"]
+
+
+def test_react_next_build_tool_detected(tmp_path):
+    root = project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"react": "^19.0.0", "next": "^15.0.0"}}),
+        "next.config.mjs": "export default {}",
+    })
+    assert [(item.framework, item.build_tools) for item in detect_frontend(root)] == [("react", ("next",))]
+
+
+def test_react_remix_build_tool_detected(tmp_path):
+    root = project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"react": "^18.0.0", "@remix-run/node": "^2.0.0"}}),
+        "remix.config.js": "export default {}",
+    })
+    assert [(item.framework, item.build_tools) for item in detect_frontend(root)] == [("react", ("remix",))]
+
+
+def test_vue_cli_build_tool_detected(tmp_path):
+    root = project(tmp_path, {
+        "package.json": json.dumps({"dependencies": {"vue": "^3.0.0", "@vue/cli-service": "^5.0.0"}}),
+        "vue.config.js": "export default {}",
+    })
+    assert [(item.framework, item.build_tools) for item in detect_frontend(root)] == [("vue", ("vue-cli",))]
+
+
+def test_first_level_workspaces_detected(tmp_path):
+    root = project(tmp_path, {
+        "web/package.json": json.dumps({"dependencies": {"vue": "^3.0.0"}}),
+        "api/package.json": json.dumps({"dependencies": {"react": "^19.0.0"}}),
+    })
+    assert sorted(item.framework for item in detect_frontend(root)) == ["react", "vue"]
+
+
+def test_second_level_directories_out_of_scope(tmp_path):
+    root = project(tmp_path, {"a/b/package.json": json.dumps({"dependencies": {"vue": "^3.0.0"}})})
+    assert detect_frontend(root) == []
