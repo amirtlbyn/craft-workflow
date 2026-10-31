@@ -6,6 +6,7 @@ says? Every check reports PASS, FAIL, SKIP or INFO.
 
     PASS  the check ran and the thing is correct
     FAIL  the check ran and the thing is wrong. This sets the exit code to 1
+    WARN  a problem that does not stop the workflow, such as a broken profile file. Exit code stays 0
     SKIP  the check could not run, and that is acceptable
     INFO  informational only. It never changes the exit code
 
@@ -18,7 +19,7 @@ Usage:
     craft-doctor --skip commands     do not run one group of checks
 
 Group names for --skip: config, standards, skills, agents, commands,
-"host documents", host, hooks, stacks, mod, codex. Repeat the flag for more than one. CI
+"host documents", host, hooks, stacks, layers, mod, codex. Repeat the flag for more than one. CI
 uses --skip commands, because the section 6 commands belong to the host
 repository and are never installed beside this plugin.
 
@@ -736,9 +737,10 @@ def print_human(report, host_root):
 
     counts = report.counts()
     print("")
+    warned = "  %d WARN" % counts["WARN"] if counts.get("WARN") else ""
     print(
-        "summary  %d PASS  %d FAIL  %d SKIP  %d INFO"
-        % (counts["PASS"], counts["FAIL"], counts["SKIP"], counts["INFO"])
+        "summary  %d PASS  %d FAIL  %d SKIP  %d INFO%s"
+        % (counts["PASS"], counts["FAIL"], counts["SKIP"], counts["INFO"], warned)
     )
     if counts["FAIL"]:
         print("Fix every FAIL above. The workflow cannot prove a check it cannot run.")
@@ -811,6 +813,33 @@ def check_stacks(report):
                 data.get("emoji", ""), data.get("id"), ", ".join(data.get("skills") or [])))
 
 
+def check_layers(report):
+    """The standards layers of the working directory: the profile, its source, and each layer."""
+    group = "layers"
+    import importlib.machinery
+    import importlib.util
+
+    try:
+        loader = importlib.machinery.SourceFileLoader("craft_std", str(PLUGIN_ROOT / "bin" / "craft-std"))
+        spec = importlib.util.spec_from_loader("craft_std", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        info = module.build_layers(os.getcwd())
+    except Exception as error:
+        report.add(group, "FAIL", "bin/craft-std", "the layers resolver failed: %s" % error)
+        return
+    report.add(group, "PASS", "profile", "%s (source: %s)" % (info["profile"] or "none", info["source"]))
+    for layer in info["layers"]:
+        if layer["exists"]:
+            report.add(group, "PASS", "%s layer" % layer["kind"], str(layer["dir"]))
+        elif layer["kind"] == "plugin":
+            report.add(group, "FAIL", "plugin layer", "%s is missing" % layer["dir"])
+        else:
+            report.add(group, "INFO", "%s layer" % layer["kind"], "not present")
+    for warning in info["warnings"]:
+        report.add(group, "WARN", "standards layers", warning)
+
+
 def check_mod(report):
     """hooks/mod.json parses, the manifest names it, and the hooks module is on disk."""
     group = "mod"
@@ -881,6 +910,8 @@ def main(argv):
         check_hooks(report)
     if "stacks" not in skip:
         check_stacks(report)
+    if "layers" not in skip:
+        check_layers(report)
     if "mod" not in skip:
         check_mod(report)
     if "codex" not in skip:

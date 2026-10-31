@@ -11,6 +11,13 @@ here. Nothing in this plugin reads a standard from outside this directory.
 | `implementation_standards.ai.md` | Implementation mechanics: tests, migrations, i18n, admin registration, metrics, alerting, deployment |
 | `technical_standards.ai.md` | The engineering standards TS-1 to TS-7 |
 
+## Layers
+
+This directory is the plugin layer, the lowest of three. `bin/craft-std` also reads
+`<repo root>/aidocs/` (project) and a profile directory under
+`<config>/craft-workflow/profiles/` (profile). The closest layer that holds a name wins.
+See "Standards per project" in `README.md`.
+
 ## Ownership
 
 `*.ai.md` files are bot-maintained and may be edited by hand or by an agent.

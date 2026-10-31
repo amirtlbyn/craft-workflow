@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0 — 2026-10-31 — Standards per project
+
+### What changed for the developer
+
+- **Three standards layers.** `bin/craft-std` reads `<repo>/aidocs/` (project),
+  a named profile under `<config>/craft-workflow/profiles/`, and the plugin's
+  `standards/`. The closest layer that holds a name replaces the lower files.
+- **Profile selection.** `aidocs/craft.json` (`{"profile": "..."}`) or the first
+  matching rule of `<config>/craft-workflow/profiles.json` (by `origin` URL or repo path).
+- **`craft-std --where`, `init`.** `--where` shows layers, profile, and source.
+  `init` copies the stack's standards into `aidocs/` as `.ai.md`, never overwriting.
+- `--list` file lines now end with the layer name.
+- `craft-doctor` has a `layers` group and a `WARN` status that does not fail the run.
+
 ## 0.10.0 — 2026-10-31 — Harder gates, ask-first specs, model by difficulty, theme picker
 
 ### What changed for the developer

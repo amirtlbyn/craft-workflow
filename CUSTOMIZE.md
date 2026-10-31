@@ -196,6 +196,13 @@ real Codex session rather than assumed from docs. A Codex session can follow
 the same workflow as prose, but nothing blocks it from skipping a gate the
 way the Claude Code hooks do.
 
+## Standards per project
+
+Put a repository's own standards in `aidocs/`, and shared team standards in a
+profile under `<config>/craft-workflow/profiles/<name>/`. Pick the profile with
+`aidocs/craft.json` or `profiles.json`. See "Standards per project" in `README.md`.
+`bin/craft-std --where` shows which file wins and why.
+
 ## Keep the standards current
 
 ```bash

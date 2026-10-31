@@ -34,6 +34,10 @@ stack adds its own standard, named in its `stacks/<id>/stack.json`:
 `.human.md`. `technical_standards` TS-1 to TS-5 apply to every stack that owns a
 database.
 
+**Layers.** The paths above are the plugin layer. `bin/craft-std` also reads the
+repository's `aidocs/` (project) and a selected profile directory, and the closest
+layer that holds a name wins (`bin/craft-std --where` shows them).
+
 **Read sections, not whole files.** `bin/craft-std --list` prints every section
 of every standard with its size and first sentence. Pull only the sections a
 change needs:

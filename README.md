@@ -89,6 +89,37 @@ answer with one key.
 
 ---
 
+## Standards per project
+
+`bin/craft-std` reads standards from three layers. The closest layer that holds a
+name wins, and its file replaces the same-named file below it entirely.
+
+| Layer | Directory |
+|---|---|
+| project | `<repo root>/aidocs/` (git top level, else the working directory) |
+| profile | `<config>/craft-workflow/profiles/<name>/` (`<config>` is an absolute `$XDG_CONFIG_HOME`, else `~/.config`) |
+| plugin | `<plugin root>/standards/` |
+
+Every top-level `*.md` file is a standard, except `README.md`. In one layer,
+`.human.md` beats `.ai.md`, `.legacy.md`, and `.md`.
+
+A repository picks its profile in `aidocs/craft.json` (`{"profile": "tabdeal"}`),
+or your `<config>/craft-workflow/profiles.json` does, by the first matching rule:
+
+```json
+{"rules": [{"remote": "*gitlab.tabdeal*", "profile": "tabdeal"},
+           {"path": "/home/me/Project/*", "profile": "personal"}]}
+```
+
+A profile name must match `[a-z0-9][a-z0-9_-]*`. A bad name, a missing profile
+directory, or a file that does not parse prints one warning on stderr and skips
+the profile layer; the other layers still answer.
+
+- `bin/craft-std --where` prints the three directories, the profile, and why.
+- `bin/craft-std --list` prints the layer beside each file.
+- `bin/craft-std init` copies the standards of the detected stacks into `aidocs/`
+  as `<name>.ai.md`. It never overwrites a file and never adds a name `aidocs/` holds.
+
 ## Install
 
 ```bash
