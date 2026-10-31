@@ -50,7 +50,7 @@ one, for example Rust:
    stack-specific items.
 4. When the stack has its own concurrency model, add an analyzer to
    `ANALYZERS` in `scripts/craft_stack.py` that returns a verdict.
-5. Add the skill rows to `config/workflow.md` §5 and the stack to §9.
+5. Add the skill rows to `config/workflow.md` §5 and the stack to §8.
 6. `bin/craft-doctor --skip commands` checks the pack. `python3
    scripts/stack_selftest.py` proves detection, checks, and trace.
 7. `bin/craft-sync-codex --write`.
@@ -60,14 +60,6 @@ To force a stack in one repository, `bin/craft-stack set <id>`.
 The routes, the spec, the spec gate, the discipline skills, and the reviewer
 protocol carry no language assumptions. The `*.human.md` standards and the
 core lens files are Django's. Every other stack adds its notes beside them.
-
-## Choose the deciders
-
-`config/deciders.json` lists the providers. `bin/craft-decide` writes a
-repository's choice to `.claude/craft/deciders.json`. To add a provider that
-speaks the OpenAI chat API, add an entry with `type: "openai"`, `base_url`,
-`model`, `key_env`, and its privacy fields (`trains_on_data`,
-`send_request_text`). Only `https://`, or `http://` to this machine.
 
 ## The mod
 

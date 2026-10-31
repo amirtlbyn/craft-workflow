@@ -1,7 +1,7 @@
 // Pure helpers for the craft mod: formatting, status glyphs, and cost arithmetic.
 // Nothing here touches $, so craft.tsx stays the only file that calls the mods API.
 
-import type { AgentCost, CostBook, Snapshot } from '../../types'
+import type { AgentCost, CostBook, Snapshot, ThemeBlock } from '../../types'
 
 export type PriceRow = {
   family: string
@@ -40,8 +40,9 @@ export function severityRank(severity: string | undefined): number {
   return SEVERITY_RANK[String(severity).toLowerCase()] ?? 4
 }
 
-export function severityColor(severity: string | undefined): string {
-  return ['error', 'error', 'warning', 'subtle'][severityRank(severity)] ?? 'subtle'
+export function severityColor(severity: string | undefined, theme?: ThemeBlock | null): string | undefined {
+  const role = (['bad', 'bad', 'warn', 'dim'] as const)[severityRank(severity)] ?? 'dim'
+  return color(role, theme)
 }
 
 export function family(model: string, prices: PriceRow[]): PriceRow {
@@ -139,11 +140,33 @@ export function pct(value: number | undefined): string {
   return value === undefined || value === null ? '—' : Math.round(value) + '%'
 }
 
-export function levelColor(percent: number | undefined): string {
-  if (percent === undefined) return 'subtle'
-  if (percent >= 80) return 'error'
-  if (percent >= 50) return 'warning'
-  return 'success'
+export type Role = 'accent' | 'text' | 'dim' | 'ok' | 'warn' | 'bad'
+
+const ENGINE_KEY: Record<Role, string | undefined> = {
+  accent: 'claude',
+  text: undefined,
+  dim: 'subtle',
+  ok: 'success',
+  warn: 'warning',
+  bad: 'error',
+}
+
+/** A role's colour: the chosen craft theme's hex, else the engine's theme key (CRF-23). */
+export function color(role: Role, theme?: ThemeBlock | null): string | undefined {
+  return (theme?.chosen ? theme.palette?.[role] : undefined) ?? ENGINE_KEY[role]
+}
+
+/** Props for dim text: the chosen theme's dim hex, else the engine's dimColor. */
+export function dimProps(theme?: ThemeBlock | null): { color?: string; dimColor?: boolean } {
+  const hex = theme?.chosen ? theme.palette?.dim : undefined
+  return hex ? { color: hex } : { dimColor: true }
+}
+
+export function levelColor(percent: number | undefined, theme?: ThemeBlock | null): string | undefined {
+  if (percent === undefined) return color('dim', theme)
+  if (percent >= 80) return color('bad', theme)
+  if (percent >= 50) return color('warn', theme)
+  return color('ok', theme)
 }
 
 export function mark(ok: boolean | null | undefined): string {
@@ -152,10 +175,10 @@ export function mark(ok: boolean | null | undefined): string {
   return '○'
 }
 
-export function markColor(ok: boolean | null | undefined): string {
-  if (ok === true) return 'success'
-  if (ok === false) return 'error'
-  return 'subtle'
+export function markColor(ok: boolean | null | undefined, theme?: ThemeBlock | null): string | undefined {
+  if (ok === true) return color('ok', theme)
+  if (ok === false) return color('bad', theme)
+  return color('dim', theme)
 }
 
 export function summaryText(detail: unknown): string {
@@ -169,38 +192,30 @@ export function summaryText(detail: unknown): string {
   return parts.join(' · ')
 }
 
-/** A decider's vote as `field value · field value`, not raw JSON. */
-export function voteText(answer: unknown): string {
-  if (!answer || typeof answer !== 'object') return String(answer ?? '')
-  return Object.entries(answer as Record<string, unknown>)
-    .map(([field, value]) => `${field} ${Array.isArray(value) ? value.join(', ') : typeof value === 'object' ? JSON.stringify(value) : String(value)}`)
-    .join(' · ')
-}
-
-export function specState(state: string | undefined): { glyph: string; text: string; color: string } {
+export function specState(state: string | undefined, theme?: ThemeBlock | null): { glyph: string; text: string; color: string | undefined } {
   switch (state) {
     case 'approved':
-      return { glyph: '✓', text: 'approved', color: 'success' }
+      return { glyph: '✓', text: 'approved', color: color('ok', theme) }
     case 'not approved':
-      return { glyph: '◐', text: 'waiting for you', color: 'warning' }
+      return { glyph: '◐', text: 'waiting for you', color: color('warn', theme) }
     case 'stale':
-      return { glyph: '◐', text: 'changed since approval', color: 'warning' }
+      return { glyph: '◐', text: 'changed since approval', color: color('warn', theme) }
     default:
-      return { glyph: '○', text: 'no spec', color: 'subtle' }
+      return { glyph: '○', text: 'no spec', color: color('dim', theme) }
   }
 }
 
 /** The scenarios state as the `S` glyph: ✓ approved, ● not approved, ! stale, ○ none. */
-export function scenariosGlyph(state: string | undefined): { glyph: string; color: string } {
+export function scenariosGlyph(state: string | undefined, theme?: ThemeBlock | null): { glyph: string; color: string | undefined } {
   switch (state) {
     case 'approved':
-      return { glyph: '✓', color: 'success' }
+      return { glyph: '✓', color: color('ok', theme) }
     case 'not approved':
-      return { glyph: '●', color: 'warning' }
+      return { glyph: '●', color: color('warn', theme) }
     case 'stale':
-      return { glyph: '!', color: 'warning' }
+      return { glyph: '!', color: color('warn', theme) }
     default:
-      return { glyph: '○', color: 'subtle' }
+      return { glyph: '○', color: color('dim', theme) }
   }
 }
 
@@ -225,16 +240,16 @@ export function rowParts(row: string): { id: string; n: number } {
   return { id: row.slice(0, at), n: Number(row.slice(at + 1)) || 0 }
 }
 
-export function gateBText(state: string | undefined): { glyph: string; color: string } {
+export function gateBText(state: string | undefined, theme?: ThemeBlock | null): { glyph: string; color: string | undefined } {
   switch (state) {
     case 'green':
-      return { glyph: '✓', color: 'success' }
+      return { glyph: '✓', color: color('ok', theme) }
     case 'changes requested':
-      return { glyph: '✗', color: 'error' }
+      return { glyph: '✗', color: color('bad', theme) }
     case 'in review':
-      return { glyph: '◐', color: 'warning' }
+      return { glyph: '◐', color: color('warn', theme) }
     default:
-      return { glyph: '○', color: 'subtle' }
+      return { glyph: '○', color: color('dim', theme) }
   }
 }
 

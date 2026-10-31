@@ -10,6 +10,7 @@ Checkpoint: `{checkpoint}`
 ## Session 1 — {title}
 
 State: pending · Covers: {key}-1
+Model: <haiku|sonnet|opus> — <reason: haiku mechanical and low-risk; sonnet normal; opus security, cross-cutting, or subtle logic. Never haiku on Risk: high>
 
 - [ ] T1 — <file-level action, e.g. add `debit()` to `WalletService` in `apps/wallet/services.py`> — {key}-1
 - [ ] T2 — test {key}-1 in `<test file>`

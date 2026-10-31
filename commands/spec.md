@@ -13,5 +13,5 @@ argument that starts with `delta:`, follow the skill's "Spec deltas" section.
 
 Present the criteria table, the "Not tested, and why" list, the non-goals, the
 risk tier, and the open questions. **Stop and wait** for approve, cut, add, or
-change. Record the approval with `bin/craft-approve` only after the developer
-gives it. Write no code and no test.
+change. The developer records the approval with `bin/craft-approve`. Never run
+it yourself. Write no code and no test.

@@ -68,7 +68,7 @@ ARM_VALUES = ("with-only", "both")
 KNOWN_TOOLS = {
     "Read", "Glob", "Grep", "NotebookRead", "Skill", "Agent", "TodoWrite",
     "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskStop", "TaskOutput",
-    "Write", "Edit", "Bash", "WebFetch", "WebSearch", "NotebookEdit",
+    "Write", "Edit", "Bash", "WebFetch", "WebSearch", "NotebookEdit", "AskUserQuestion",
 }
 
 

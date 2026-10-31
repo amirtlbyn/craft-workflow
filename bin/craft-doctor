@@ -18,7 +18,7 @@ Usage:
     craft-doctor --skip commands     do not run one group of checks
 
 Group names for --skip: config, standards, skills, agents, commands,
-"host documents", host, hooks, stacks, mod, deciders, codex. Repeat the flag for more than one. CI
+"host documents", host, hooks, stacks, mod, codex. Repeat the flag for more than one. CI
 uses --skip commands, because the section 6 commands belong to the host
 repository and are never installed beside this plugin.
 
@@ -538,7 +538,6 @@ def check_commands_on_disk(report):
         "craft-approve",
         "craft-check",
         "craft-std",
-        "craft-jev",
         "craft-session",
         "craft-doctor",
         "craft-toolchain",
@@ -552,21 +551,6 @@ def check_commands_on_disk(report):
         else:
             report.add(group, "PASS", "bin/%s" % name, "present and executable")
 
-    # The optional Jev layer: its config must parse, and it must say where to call.
-    jev_config = PLUGIN_ROOT / "config" / "jev.json"
-    if jev_config.exists():
-        try:
-            data = json.loads(jev_config.read_text(encoding="utf-8"))
-            stages = data.get("stages") or {}
-            approve = data.get("approve") or {}
-            if approve and not ((approve.get("questions") or {}).get("verdict") and approve.get("ask_patterns")):
-                report.add(group, "FAIL", "config/jev.json approve", "needs a verdict question and ask_patterns")
-            if data.get("model") and data.get("endpoint") and stages.get("route") and stages.get("review"):
-                report.add(group, "PASS", "config/jev.json", "parses, model %s" % data.get("model"))
-            else:
-                report.add(group, "FAIL", "config/jev.json", "needs model, endpoint, and route and review stages")
-        except ValueError as error:
-            report.add(group, "FAIL", "config/jev.json", "does not parse: %s" % error)
 
 
 def check_optional_documents(report, workflow_text, host_root):
@@ -858,26 +842,6 @@ def check_mod(report):
     report.add(group, "INFO", "claude plugin validate .", "the engine's own check of the module. Run it after any change")
 
 
-def check_deciders(report):
-    """config/deciders.json parses, and every provider it routes to is defined."""
-    group = "deciders"
-    path = PLUGIN_ROOT / "config" / "deciders.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
-        report.add(group, "FAIL", "config/deciders.json", "does not parse: %s" % error)
-        return
-    providers = data.get("providers") or {}
-    for key in ("order", "council", "approve_providers"):
-        unknown = [name for name in data.get(key) or [] if name not in providers]
-        report.add(group, "FAIL" if unknown else "PASS", "deciders %s" % key,
-                   "unknown provider(s): %s" % ", ".join(unknown) if unknown else ", ".join(data.get(key) or []) or "empty")
-    for name, provider in sorted(providers.items()):
-        url = str((provider or {}).get("base_url") or "")
-        if url and not (url.startswith("https://") or url.startswith("http://localhost") or url.startswith("http://127.0.0.1")):
-            report.add(group, "FAIL", "deciders.%s" % name, "base_url must be https, or http on this machine")
-
-
 def main(argv):
     as_json = "--json" in argv
     if "-h" in argv or "--help" in argv:
@@ -919,8 +883,6 @@ def main(argv):
         check_stacks(report)
     if "mod" not in skip:
         check_mod(report)
-    if "deciders" not in skip:
-        check_deciders(report)
     if "codex" not in skip:
         check_codex_sync(report)
 

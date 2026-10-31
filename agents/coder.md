@@ -1,6 +1,6 @@
 ---
 name: coder
-description: Implementation agent for the project route. Delegate one session of an approved spec to it, with the spec directory and the session number. It implements exactly the session's tasks, writes one test per acceptance criterion, verifies with real commands, and reports. The main session, not this agent, orchestrates the review.
+description: Implementation agent for project sessions, and for task work when the picked model differs from the main session's. Delegate one session of an approved spec to it, with the spec directory and the session number. It implements exactly the session's tasks, writes one test per acceptance criterion, verifies with real commands, and reports. The main session, not this agent, orchestrates the review.
 tools: Read, Grep, Glob, Edit, Write, Bash, Skill, TodoWrite
 model: sonnet
 ---

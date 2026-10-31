@@ -1,7 +1,7 @@
 // The craft mod's state contract. claude plugin validate holds every $.state key
 // the hooks module names to this file.
 
-export type Tab = 'spec' | 'tasks' | 'gates' | 'review' | 'cost' | 'deciders' | 'scenarios'
+export type Tab = 'spec' | 'tasks' | 'gates' | 'review' | 'cost' | 'scenarios' | 'theme'
 export type DocName = 'spec' | 'design' | 'tasks' | 'log' | 'scenarios'
 
 export type CheckView = {
@@ -29,6 +29,16 @@ export type Criterion = {
   developer: boolean
   tests?: string[] | null
 }
+
+export type ThemeRole = 'accent' | 'text' | 'dim' | 'ok' | 'warn' | 'bad'
+export type ThemeBlock = {
+  name: string
+  chosen: boolean
+  palette: Record<ThemeRole, string> | null
+  bar: string
+  source?: string
+}
+export type ThemeRow = { bar: string; palette: Record<ThemeRole, string> | null }
 
 export type Snapshot = {
   version: number
@@ -71,18 +81,7 @@ export type Snapshot = {
   gate_a?: { items: GateItem[]; passed: number; total: number; green: boolean; started: boolean }
   gate_b?: { state: string; green: boolean; blocking: number; proposed: number; rounds: number }
   findings?: Finding[]
-  deciders?: {
-    enabled: boolean
-    approve?: boolean
-    mode?: string
-    order?: string[]
-    council?: string[]
-    ready?: string[]
-    labels?: Record<string, string>
-    cost_total?: number
-    decisions?: number
-    last?: Record<string, unknown> | null
-  }
+  theme?: ThemeBlock
 }
 
 export type AgentCost = {
@@ -119,6 +118,8 @@ declare module 'claude-code' {
       scenarioCursor: string
       deleteScenario: { id: string; n: number; line: string } | null
       hscroll: number
+      themes: Record<string, ThemeRow> | null
+      themeCursor: string
     }
   }
 }

@@ -24,6 +24,10 @@ its ID, so `bin/craft-spec trace` can prove the mapping. The spec replaces the
 old separate test-scenario list. Since 0.8.0 the developer also approves the
 concrete scenarios of each criterion before any test is written (see below).
 
+**A theme you can change in one key.** `/craft-theme` shows ten themes as
+preview rows, each in its own colours. Pick one and the status line and the
+board both use it. See [Change the theme](#change-the-theme).
+
 **A spec gate that is a hook, not a request.** Until the spec is approved, no
 source or test file can be written on `task` or `project`. The approval is
 bound to the SHA-256 of `spec.md`. Change the spec and the gate shuts again
@@ -78,14 +82,9 @@ and `go-concurrency` hold the patterns for systems that are ready. A system
 that is not ready gets a cheaper fix, a background job, or a `project` that
 changes the model on purpose, never async as a side effect.
 
-**🧠 AI deciders, free ones too (0.7).** The routing questions go to Jev, to a
-free tier (OpenRouter's free router, Groq, Gemini, Cerebras, Mistral, GitHub
-Models, Cloudflare), to a local model (Ollama, LM Studio), or to Claude Haiku,
-one at a time or as a council. The rules floor applies to all of them.
-
 **🎛️ A Claude Code mod (0.7).** The status at the top of the screen, a 🗂 craft
-board with tabs for the spec, tasks, gates, review, 💰 cost per agent, and
-deciders, commands that cost no tokens, and the spec gate as a question you
+board with tabs for the spec, tasks, scenarios, gates, review, and 💰 cost per
+agent, commands that cost no tokens, and the spec gate as a question you
 answer with one key.
 
 ---
@@ -118,7 +117,7 @@ validate .` checks it, and `claude plugin test` runs `tests/`.
 ```
 /craft   <anything>    classify, then run the right route
 /quick   <small fix>   inline, no spec, no subagent
-/task    <one MR>      spec → approval → implement inline → one review pass
+/task    <one MR>      spec → approval → implement (inline, or `coder` on another model) → one review pass
 /project <big thing>   spec → approval → design and sessions → coder per session
 ```
 
@@ -128,19 +127,18 @@ Or drive the steps yourself:
 /spec  /plan  /implement  /review  /fix-review  /progress  /finish
 /design-brainstorm  /arch  /debug  /test-audit
 /minimal-audit  /minimal-gain      find over-engineered code, measure what a change added
-/jev on | off | status | test     optional: let Jev make the routing decisions
-/decide status | use | council    choose the deciders: Jev, free tiers, local models, Haiku
 /stack  /concurrency              the stacks of this repository, and its concurrency verdict
 ```
 
 From the mod, with no Claude turn and no tokens:
 
 ```
-/craft-board    🗂 the board: 📋 spec · ✅ tasks · 🚦 gates · 🔍 review · 💰 cost · 🧠 deciders
+/craft-board    🗂 the board: 📋 spec · ✅ tasks · 🧪 scenarios · 🚦 gates · 🔍 review · 💰 cost · 🎨 theme
 /craft-status   🛠️ where the spec stands, in a few lines
 /craft-cost     💰 what each agent cost on this spec
 /craft-gates    🚦 Gate A and Gate B, check by check
 /craft-trace    🔗 map each criterion to its test now
+/craft-theme    🎨 pick the status line and board theme (see "Change the theme")
 ```
 
 A `task`, end to end:
@@ -174,10 +172,8 @@ bin/craft-scenarios status|draft         the scenarios state, make scenarios.md 
 bin/craft-scenarios add|set|remove       add, replace, or delete one scenario of a criterion
 bin/craft-check -- <command>             run a check, record its exit code, print a summary
 bin/craft-std --list | <file> <section>  read one section of a standard
-bin/craft-jev on|off|status|test|decide  the optional Jev decision layer
 bin/craft-doctor  bin/craft-toolchain    health check, toolchain installer
 bin/craft-stack [checks|concurrency|…]   the stacks, their checks, the concurrency verdict
-bin/craft-decide status|use|council|…    the AI deciders
 bin/craft-ui-state                       the JSON the mod draws
 ```
 
@@ -242,7 +238,7 @@ What Claude Code looks like with it:
 🐹 go  🔴 risk high  🧵 ready  🧠 council
 📋 ✅ approved  🅰️ 🔗❌ 🧪✅ 🏁✅ 🎨❌  🅱️ ⏳ in review
 💰 $1.84  ⏱ 5h ████░░░░░░ 42%  🧠 ctx 61%
-1 📋 Spec  2 ✅ Tasks  3 🧪 Scenarios  4 🚦 Gates  5 🔍 Review  6 💰 Cost  7 🧠 Deciders
+1 📋 Spec  2 ✅ Tasks  3 🧪 Scenarios  4 🚦 Gates  5 🔍 Review  6 💰 Cost  7 🎨 Theme
 ```
 
 - **Status at the top.** In a wide fullscreen terminal the board docks beside
@@ -250,8 +246,7 @@ What Claude Code looks like with it:
   there is no room, the same status is a band above the prompt. Set
   `status` to `prompt` or `both` in `/plugin` → craft-workflow → options.
 - **💰 Cost per agent.** Every model request is counted under its agent: the
-  main session, `reviewer`, `deep-reviewer`, `coder`, Explore, and the
-  deciders. Priced with `config/prices.json`, kept per spec across sessions,
+  main session, `reviewer`, `deep-reviewer`, `coder`, and Explore. Priced with `config/prices.json`, kept per spec across sessions,
   with the engine's own ledger beside it.
 - **The spec gate as a question.** Before the spec is approved, a write to
   source asks you: 👀 open the spec, ✅ approve it, or 🚫 keep it blocked.
@@ -305,109 +300,34 @@ the window resets. `--detail` adds the third line.
 
 `bin/craft-statusline --preview` prints every theme and bar style on sample data.
 
+### Change the theme
+
+Three ways. They write one file, `~/.config/craft-workflow/statusline.json`
+(`$XDG_CONFIG_HOME/craft-workflow/` when set), and the latest change wins.
+
+1. **The picker.** Run `/craft-theme`, or open the board and press `7`. Every
+   theme is a row drawn in its own colours with a sample usage bar. `j` and `k`
+   move the ▸ marker, and `a` applies the marked row. Enter on the marked row applies it; Enter on another row only marks it. No Claude turn.
+2. **The plugin options.** `/plugin` → craft-workflow → options → `theme` and
+   `bar`. The mod writes an option to the file at session start only when you
+   changed it, so the picker is not overwritten at each start.
+3. **The command line.**
+
+```
+bin/craft-statusline --set-theme nord      # save a theme
+bin/craft-statusline --set-bar dots        # save a bar style
+bin/craft-statusline --unset               # forget both
+```
+
+An unknown name exits 1 and lists the valid names; the file stays as it was.
+The order is flag, then environment variable, then the file, then the default
+(`craft`). With a craft theme chosen, the board draws its accent, ok, warn,
+bad, and dim colours, and the finding severities, in that theme's hex colours. The key-hint buttons (`refresh`, `down`, and the like) keep Claude Code's dim style. With none chosen, the board keeps Claude Code's own theme colours. If `CRAFT_STATUSLINE_THEME` or a `--theme` flag in `settings.json` is set, it wins over the saved theme.
+
 The mod draws what `bin/craft-ui-state` reports. It never decides a gate. The
 Python hooks still enforce every rule, so the VS Code panel, `claude -p`,
 ZCode, and Codex keep them. The mod's drawings show in the terminal and in the
 Desktop app's Code tab.
-
-## Deciders — Jev and the others
-
-Since 0.7, Jev is one of several deciders. `bin/craft-decide` picks them:
-
-```bash
-bin/craft-decide status                    # free? local? may keep prompts? key found?
-bin/craft-decide use ollama                # the most private: nothing leaves the machine
-bin/craft-decide council jev,groq,ollama   # ask together, average the answers
-bin/craft-decide test all                  # one tiny question to each
-bin/craft-decide discover openrouter-free --free
-```
-
-A free tier that may keep prompts gets no request text unless you set
-`send_request_text true` for it. The rest of this section describes Jev, the
-default.
-
-## Jev — optional typed decisions
-
-[Jev](https://openrouter.ai/typesafe/jev-1.13) is TypeSafe's "System One"
-decision model. It does not write text and it does not call tools. It answers
-typed questions — yes/no with a probability, or one choice from a list with
-calibrated confidence — in about 0.7 to 1.3 seconds in practice, for about $0.04 per
-million input tokens. This plugin reaches it through OpenRouter's Decisions API.
-
-With `/jev on`, Jev makes the routing decisions Claude otherwise makes by
-reading prose:
-
-| Stage | Jev decides | Used for |
-|---|---|---|
-| `route` | route, risk tier, implementer model (haiku / sonnet / opus), which skills to load | The route line, the spec header, the `coder` model, the skill loads |
-| `review` | risk tier, whether the `logic`, `security`, and `query` lenses apply | Which lenses `reviewer` and `deep-reviewer` get |
-
-Four rules keep it safe:
-
-- **A rules floor.** Path globs from `config/paths.json` and keywords for money,
-  auth, migrations, concurrency, and integrations set a minimum route, risk
-  tier, model, and lens set. Jev can raise a decision above the floor, never
-  lower it.
-- **A confidence threshold.** A choice below 0.7 is undecided, and Claude decides.
-- **Fail open.** No key, a timeout (one retry with backoff), or an HTTP error
-  means `rules only`. The work never stops for Jev.
-- **Little leaves the machine.** Jev gets the request text (skip it with
-  `--no-request-text`), changed paths, and line counts, never file contents.
-  The request asks providers not to collect data.
-
-Set it up once:
-
-```bash
-export OPENROUTER_API_KEY=sk-or-...        # or write it to ~/.config/craft-workflow/openrouter.key
-/jev on                                     # this repository only. CRAFT_JEV=on|off overrides it
-/jev test                                   # one call: the answer, the latency, the cost
-```
-
-Tune the questions in `config/jev.json`. Every decision goes into
-`.claude/craft/jev-log.jsonl`, without the request text, so you can see where
-Jev and you disagree before you trust it with more.
-
-**Change the endpoint or the model** for one repository, without editing plugin
-files that an update would overwrite:
-
-```bash
-bin/craft-jev set endpoint https://<host>/api/alpha/decisions
-bin/craft-jev set model typesafe/jev-1.13
-bin/craft-jev unset endpoint                 # back to config/jev.json
-bin/craft-jev status                         # shows each value and where it came from
-```
-
-`CRAFT_JEV_URL` and `CRAFT_JEV_MODEL` override both for one shell. Only
-`https://` endpoints are accepted, so the key never travels in clear text.
-
-### Tool-call approval — `/jev approve on`
-
-A second, separate switch lets Jev approve tool calls that would otherwise
-prompt you, so work in `default` permission mode runs with fewer
-interruptions. It is off until you run `/jev approve on`, and it needs Jev on.
-
-It can only turn a prompt into an approval. When it does not approve, it stays
-silent and Claude Code asks you as usual:
-
-| Check, in order | Result |
-|---|---|
-| `bypassPermissions` or `plan` mode | does nothing |
-| `protect_human_owned` or the spec gate would deny | does nothing, they deny |
-| `deny_patterns`: `rm -rf /`, `mkfs`, `curl … \| sh`, `dd of=/dev/…` | **denied** |
-| `ask_patterns`: git push and history rewrites, installs, network tools, credentials, databases, `python -c`, deploys, `craft-approve`, `CRAFT_HOOKS=off` | you are asked |
-| `ask_path_patterns`: `.env`, `.ssh/`, keys, `.git/`, the craft state files, anything outside the repository | you are asked |
-| Jev: `allow` at ≥ 0.90, "irreversible" < 0.30, "sends data out" < 0.30 | **approved** |
-| Anything else, a timeout, or an error | you are asked |
-
-Secrets in a command (bearer tokens, `sk-…`, `password=…`, AWS keys,
-`user:pass@` in URLs) are redacted before the call. File contents are never
-sent. Every decision is logged in `.claude/craft/jev-approvals.jsonl`. Each
-eligible call waits about 0.7 to 1.3 seconds in practice for Jev, or up to 3 seconds when
-it times out.
-
-The lists live in the `approve` block of `config/jev.json`. Add your own
-must-ask commands there. Keep your own deny rules in Claude Code's settings
-too: this hook is a convenience, not your last line of defence.
 
 ---
 
@@ -418,8 +338,6 @@ too: this hook is a convenience, not your last line of defence.
 config/workflow.md           ← the file you edit
 config/paths.json            the glob sets the hooks and trace read
 config/toolchain.json        the tools craft-toolchain looks for
-config/jev.json              the decider questions, and Jev's model, endpoint, thresholds
-config/deciders.json         the decider providers, the mode, the order, the council
 config/prices.json           the price table for cost per agent
 stacks/<id>/                 a stack pack: stack.json and lenses.md
 hooks/mod.json, hooks/mod/   the Claude Code mod (craft.tsx, view.ts)
@@ -433,7 +351,7 @@ agents/                      coder, reviewer, deep-reviewer
 commands/                    the slash commands
 hooks/                       the rules the workflow enforces, not requests
 bin/                         craft-spec, craft-approve, craft-check, craft-std,
-                             craft-jev, craft-session, craft-doctor,
+                             craft-session, craft-doctor,
                              craft-toolchain, craft-sync-codex
 scripts/                     hook implementations, state library, self-test, CI checks
 evals/                       measures the plugin's own claims, with and without it
@@ -462,7 +380,6 @@ evals/                       measures the plugin's own claims, with and without 
 | `arch-assistant` | A second opinion on shape. Advisory — you always decide |
 | `asd-ste100` | Rewriting a long developer document. Short text uses `references/card.md` |
 | `toolchain` | A check cannot run because the tool is not installed |
-| `jev` | `/jev`, or a routing decision while Jev is on |
 
 ## Review
 
@@ -506,8 +423,9 @@ weighting assumes Opus draws about five times the quota of Sonnet.
 
 Where the savings come from:
 
-- `task` implements in the main session. It already holds the context, so no
-  `coder` re-reads it.
+- `task` implements in the main session when the session's model fits the
+  difficulty, so no `coder` re-reads the context. It delegates to `coder` only
+  when the picked model differs from the main session's model.
 - One `reviewer` pass instead of four. Opus runs only on `Risk: high`.
 - Re-review is the fix delta and only the reviewer with a Critical or High, not
   every reviewer on the whole diff again.
@@ -623,14 +541,14 @@ without it, and reports the delta. It is a real, billed model call, run by hand:
 
 ```bash
 claude plugin eval . --trust-plugin --scaffold --allow-tools Write Edit Bash \
-  --threshold 0.8 --model claude-sonnet-5 --judge-model claude-haiku-4-5 \
+  --threshold 0.8 --model claude-sonnet-5-5 --judge-model claude-haiku-5-5 \
   --no-publish --max-cost-usd 20
 ```
 
 CI (`.gitlab-ci.yml`) does not run that suite — no runner here holds an API key.
 It runs free, deterministic checks instead: `craft_selftest.py` against the
 hooks, `stack_selftest.py` against the stacks, the trace, the checks, and the
-deciders, `sync_codex_selftest.py` against the Codex generator,
+mod's snapshot, `sync_codex_selftest.py` against the Codex generator,
 `validate_evals.py` against every eval case and grader, and
 `craft-doctor --skip commands` against the plugin's own wiring. They use the
 standard library on Python 3.11+; Python 3.10 installs the small `tomli`

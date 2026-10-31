@@ -6,6 +6,7 @@ Usage:
                        [--slug SLUG] [--checkpoint "CMD"]
     bin/craft-spec status [--json]
     bin/craft-spec trace [--session N] [--json]
+    bin/craft-spec lenses [--base REF] [--json]
     bin/craft-spec close
 
 Commands:
@@ -21,6 +22,11 @@ Commands:
              has no test. The result is recorded as a check when a session is
              active. --session N limits it to the criteria that the
              "## Session N" block of tasks.md lists on its "Covers:" line.
+    lenses   The review lenses the diff earns, each with the path or line that
+             caused it: spec and style always, the rest from the changed paths
+             (committed, uncommitted, untracked) since --base. The base is the
+             spec's start commit, recorded by `new`; without one, HEAD. The
+             Stop hook refuses `done` until review rounds cover every lens.
     close    End the craft session, clear ACTIVE, and log the closing. The spec
              directory stays as the record of what was agreed.
 
@@ -197,7 +203,7 @@ def command_new(argv):
     session = craft_state.read_session(cwd)
     if session and session.get("spec") != name:
         craft_state.end_session(cwd)
-    if not craft_state.start_session(route, checkpoint=checkpoint or None, cwd=cwd, spec=name):
+    if not craft_state.start_session(route, checkpoint=checkpoint or None, cwd=cwd, spec=name, base=craft_state.head_commit(cwd)):
         sys.stderr.write("The spec exists, but session.json could not be written.\n")
         return 1
 
@@ -211,8 +217,8 @@ def command_new(argv):
     print("  route       %s" % route)
     print("  checkpoint  %s" % (checkpoint or "not set. Set it in spec.md and tasks.md"))
     print("")
-    print("Next: fill spec.md, present it, stop for approval, then run:")
-    print("  %s" % (PLUGIN_ROOT / "bin" / "craft-approve"))
+    print("Next: fill spec.md, present it, and stop for approval. The developer types:")
+    print('  ! "%s"' % (PLUGIN_ROOT / "bin" / "craft-approve"))
     return 0
 
 
@@ -245,7 +251,15 @@ def status_report(cwd):
         "green_checks": len(green),
         "last_check": recorded[-1] if recorded else None,
         "session_active": craft_state.is_active(cwd),
+        "models": {},
     }
+    directory = craft_state.active_spec_dir(cwd)
+    if directory is not None:
+        try:
+            tasks_text = (directory / "tasks.md").read_text(encoding="utf-8", errors="replace")
+            report["models"] = {str(n): m for n, m in craft_state.session_models(tasks_text).items()}
+        except (OSError, ValueError):
+            pass
     legacy = craft_state.host_root(cwd) / ".claude" / "plans" / "ACTIVE"
     if not report["spec"] and legacy.is_file():
         try:
@@ -288,6 +302,8 @@ def command_status(argv):
         )
     if report["next_task"]:
         print("next task   %s" % report["next_task"])
+    for number, model in report["models"].items():
+        print("session %s   %s" % (number, model or "model: not chosen"))
     print("checkpoint  %s" % (report["checkpoint"] or "not set"))
     last = report["last_check"]
     if last:
@@ -440,7 +456,7 @@ def command_trace(argv):
     if directory is None or not (directory / "spec.md").is_file():
         sys.stderr.write("No active spec. Nothing to trace.\n")
         return 2
-    spec_text = (directory / "spec.md").read_text(encoding="utf-8")
+    spec_text = (directory / "spec.md").read_text(encoding="utf-8", errors="replace")
     ids = criteria_ids(spec_text)
     if not ids:
         sys.stderr.write(
@@ -452,7 +468,7 @@ def command_trace(argv):
     scope = "all criteria"
     if session:
         try:
-            tasks_text = (directory / "tasks.md").read_text(encoding="utf-8")
+            tasks_text = (directory / "tasks.md").read_text(encoding="utf-8", errors="replace")
         except OSError:
             tasks_text = ""
         covered = session_covers(tasks_text, session.strip(), ids)
@@ -525,6 +541,21 @@ def command_trace(argv):
 # ---------------------------------------------------------------------------
 
 
+def command_lenses(argv):
+    cwd = argument(argv, "--cwd")
+    base = argument(argv, "--base")
+    if base is not None and craft_state.resolve_commit(base, cwd) is None:
+        sys.stderr.write("--base %s names no commit in this repository\n" % base)
+        return 2
+    floor = craft_state.lens_floor(cwd, base)
+    if "--json" in argv:
+        print(json.dumps({"lenses": floor}, indent=2))
+    else:
+        for entry in floor:
+            print("%-12s %s" % (entry["lens"], entry["reason"]))
+    return 0
+
+
 def command_close(argv):
     cwd = argument(argv, "--cwd")
     directory = craft_state.active_spec_dir(cwd)
@@ -549,6 +580,7 @@ def main(argv):
         "new": command_new,
         "status": command_status,
         "trace": command_trace,
+        "lenses": command_lenses,
         "close": command_close,
     }
     if not argv or argv[0] in ("-h", "--help") or argv[0] not in commands:

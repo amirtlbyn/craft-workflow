@@ -245,3 +245,55 @@ def test_scenarios_state_shows_as_s_glyph(scenarios, expected):
     head = statusline.render(usage_data(), snapshot, plain_options(), NOW).splitlines()[0]
 
     assert expected in head
+
+
+def test_theme_file_is_saved_validated_and_ranked_below_env_and_flag(tmp_path):
+    """CRF-20: Given --set-theme and --set-bar ran, when the status line renders, then the file applies below env and flag, and an unknown name exits 1."""
+    config = tmp_path / "craft-workflow" / "statusline.json"
+    env = {"XDG_CONFIG_HOME": str(tmp_path), "NO_COLOR": "1"}
+
+    def run(*args):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *args],
+            env={**env, "PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert statusline.parse_options([], env).theme.name == "craft"
+
+    assert run("--set-theme", "nord").returncode == 0
+    assert run("--set-bar", "dots").returncode == 0
+    saved = statusline.parse_options([], env)
+    assert (saved.theme.name, saved.bar) == ("nord", "dots")
+    assert json.loads(config.read_text()) == {"theme": "nord", "bar": "dots"}
+
+    assert statusline.parse_options([], {**env, "CRAFT_STATUSLINE_THEME": "ocean"}).theme.name == "ocean"
+    assert statusline.parse_options(["--theme=neon"], {**env, "CRAFT_STATUSLINE_THEME": "ocean"}).theme.name == "neon"
+
+    before = config.read_text()
+    refused = run("--set-theme", "nope")
+    assert refused.returncode == 1
+    assert "nord" in refused.stderr and "tokyo-night" in refused.stderr
+    assert config.read_text() == before
+
+    config.write_text(json.dumps({"theme": "nope", "bar": "nope"}))
+    assert statusline.parse_options([], env).theme.name == "craft"
+    config.write_text("[" * 100_000)
+    assert statusline.parse_options([], env).theme.name == "craft"
+    config.write_text("{not json")
+    rendered = run("--preview")
+    assert rendered.returncode == 0 and "Traceback" not in rendered.stderr
+    assert statusline.parse_options([], env).theme.name == "craft"
+
+    helped = subprocess.run([sys.executable, str(SCRIPT), "--help"], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+    assert helped.returncode == 0 and "--set-theme" in helped.stdout and "--themes-json" in helped.stdout
+
+    # An invalid env value does not hide the saved theme, and a relative XDG_CONFIG_HOME is ignored.
+    config.write_text(json.dumps({"theme": "nord"}))
+    assert statusline.parse_options([], {**env, "CRAFT_STATUSLINE_THEME": "bogus"}).theme.name == "nord"
+    assert statusline.config_path({"XDG_CONFIG_HOME": "rel", "HOME": "/h"}) == pathlib.Path("/h/.config/craft-workflow/statusline.json")
+
+    assert run("--unset").returncode == 0
+    assert not config.exists()

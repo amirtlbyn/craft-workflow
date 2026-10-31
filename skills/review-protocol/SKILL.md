@@ -18,6 +18,12 @@ second.
 
 ## Lenses
 
+The main session routes the lenses. The floor is the output of
+`<plugin root>/bin/craft-spec lenses`: each lens the changed paths and added
+lines earn, with the cause. Route that floor, and add a lens when the diff earns
+one it cannot see. The Stop hook refuses `done` on `task` and `project` until
+the recorded review rounds cover the floor.
+
 | Lens | Owns | Ceiling | Min confidence |
 |---|---|---|---|
 | `spec` | Conformance to the spec: criteria implemented and tested, nothing extra, non-goals held | High | 0.7 |

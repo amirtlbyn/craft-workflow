@@ -49,7 +49,15 @@ directories' `README.ai.md` and `INVARIANTS.human.md` when they exist.
 
 Stop reading when you can fill every section. The spec is not a design review.
 
-## Step 3 — Write `spec.md`
+## Step 3 — Ask, then write `spec.md`
+
+**Ask first.** Before you draft, read the code (Step 2). Then ask EVERY open
+question with the `AskUserQuestion` tool: 2 to 4 options, the recommended one
+first and marked "(Recommended)", each with a short description of its
+consequence. The developer may always write their own answer (the tool adds
+"Other"). Group up to 4 questions per call. Never write an assumption. Record
+each answer in the Open questions table as `<answer> (developer, <date>)`.
+`bin/craft-approve` refuses a row that is empty or starts with "Assum".
 
 Fill the template. Delete each template comment when you fill its section.
 
@@ -110,7 +118,7 @@ See `examples/withdrawal-limit.spec.md` for a finished task spec.
 - [ ] No criterion describes an implementation detail.
 - [ ] Every non-goal is a real temptation, not filler.
 - [ ] The risk tier matches the rule above.
-- [ ] Every open question is decided, or its assumption is written.
+- [ ] Every open question was asked with `AskUserQuestion` and holds the developer's answer. No row is empty or an assumption.
 - [ ] The checkpoint command is the real one.
 - [ ] Every standards section named exists in `bin/craft-std --list`.
 
@@ -130,17 +138,21 @@ one line and keep it unless they withdraw it.
 
 Do not write code or tests while you wait. Silence is not approval.
 
-## Step 6 — Record the approval
+## Step 6 — The developer records the approval
 
-After the developer says approve, and only then:
+The developer records the approval, not you. A hook denies every Bash command
+that runs `craft-approve`, and every write to `.claude/craft/approval.json`.
+When the developer says approve, ask the developer to type this line in the
+prompt, or to press `a` on the board:
 
-```bash
-<plugin root>/bin/craft-approve
+```
+! "<plugin root>/bin/craft-approve"
 ```
 
-It records the SHA-256 of the active `spec.md` and opens the spec gate. It also
-appends the approval to `log.md`. The approval survives a new session, so work
-can resume after a usage-limit reset without a second approval.
+Give the real plugin root in the line. The `!` runs it in the developer's
+shell. It records the SHA-256 of the active `spec.md` and opens the spec gate.
+It also appends the approval to `log.md`. The approval survives a new session,
+so work can resume after a usage-limit reset without a second approval.
 
 Then follow Step 7. On the task route, fill `tasks.md` and implement only after
 the scenario approval. On the project route, run `/plan` after the scenario
@@ -159,9 +171,10 @@ criterion.
    failure story of each criterion, not only the happy path.
 3. Present the scenarios grouped by criterion. Then stop and ask the developer to
    approve, add, change, or cut. Silence is not approval.
-4. After the developer says approve, and only then, run
-   `<plugin root>/bin/craft-approve --scenarios`. It records the SHA-256 of
-   `scenarios.md` and of `spec.md`.
+4. Ask the developer to record the approval: to type
+   `! "<plugin root>/bin/craft-approve" --scenarios` in the prompt, or to
+   approve on the board. It records the SHA-256 of `scenarios.md` and of
+   `spec.md`. Do not run it yourself.
 
 The developer can also edit the scenarios on the board's Scenarios tab (key 3).
 A change to `scenarios.md` or `spec.md` after the approval makes the scenarios
@@ -182,9 +195,10 @@ wrong, missing, or impossible:
    criterion unimplemented.
 2. Show the delta: the rows to add, change, or remove, and why, in three lines
    or fewer.
-3. After the developer approves, edit `spec.md`, append a `spec delta` entry to
-   `log.md`, and run `bin/craft-approve` again. The gate was shut from the
-   moment `spec.md` changed.
+3. After the developer approves, edit `spec.md` and append a `spec delta` entry
+   to `log.md`. Then ask the developer to approve again with
+   `! "<plugin root>/bin/craft-approve"`. The gate was shut from the moment
+   `spec.md` changed.
 
 A delta that removes a MUST-class criterion needs the developer's words, not a
 silence.
@@ -194,8 +208,8 @@ silence.
 - It will not write code before the spec is approved.
 - It will not put state, progress, or test names into `spec.md`. They change,
   and every change to `spec.md` closes the gate.
-- It will not record an approval the developer did not give. That covers the
-  scenario approval too.
+- It will not run `craft-approve` or write `approval.json`. Only the developer
+  records an approval, for the spec and for the scenarios. The hooks deny both.
 - It will not edit a `*.human.md` document.
 
 ## Related

@@ -37,6 +37,15 @@ plan it.
 
 ## Phase 1 — Settle the shape
 
+**Ask first.** Before you draft `design.md`, read the code. Then ask EVERY open
+question with the `AskUserQuestion` tool: 2 to 4 options, the recommended one
+first and marked "(Recommended)", each with a short description of its
+consequence. The developer may always write their own answer (the tool adds
+"Other"). Group up to 4 questions per call. Never write an assumption. Record
+each answer in the "Developer answer" column of the `design.md` Decisions
+table as `<answer> (developer, <date>)`. A question that changes what the spec
+promises is a spec delta, not a design decision.
+
 Do not decompose a change whose shape is not settled. Stop and run
 `/design-brainstorm` when any of these is true:
 
@@ -64,6 +73,15 @@ Write the sessions into `tasks.md`, one `## Session N` block each. A session:
 - Breaks at a natural seam: migrations before models, models before services,
   services before APIs. Never in the middle of a layer.
 - Depends only on code that an earlier session writes.
+
+Pick the model of each session by difficulty and write `Model: <id> — <reason>`
+under its `State:` line. **haiku**: mechanical, low-risk, well specified.
+**sonnet**: normal work. **opus**: security boundaries, cross-cutting or subtle
+logic, hard debugging. Tie-breakers: between sonnet and opus pick opus when
+the session spans more than one app, or touches a security boundary, money, or
+concurrency; between haiku and sonnet pick sonnet when the session has more than
+one criterion or any new logic. `Risk: high` gates the whole spec: no session
+gets haiku, and the hook denies it. The orchestrator spawns `coder` with that model.
 
 Every criterion in the spec is covered by exactly one session. Every task:
 

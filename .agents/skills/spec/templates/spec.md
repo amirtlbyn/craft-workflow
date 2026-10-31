@@ -59,6 +59,7 @@ None.
 ## Open questions
 
 <!-- Only questions that change scope, data, behavior, security, or rollout.
-     Resolve every one before approval, or write the assumption. -->
+     Ask every question with AskUserQuestion, and write the developer's answer
+     in Decision as "<answer> (developer, <date>)". Never write an assumption. -->
 | Question | Options | Decision |
 |---|---|---|

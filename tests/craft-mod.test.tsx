@@ -20,6 +20,16 @@ type World = {
   docs: Record<string, string>
   opened: Record<string, unknown>[]
   hold: Promise<void> | null
+  failSet: boolean
+}
+
+const NORD = { accent: '#87afd7', text: '#eeeeee', dim: '#5f6f87', ok: '#87af87', warn: '#ffd787', bad: '#d78787' }
+const OCEAN = { accent: '#00afff', text: '#d7d7ff', dim: '#5f87af', ok: '#5fd7d7', warn: '#ffaf5f', bad: '#ff5f87' }
+const THEMES = {
+  craft: { bar: 'gradient-pill', palette: { accent: '#ff875f', text: '#d0d0d0', dim: '#808080', ok: '#87d787', warn: '#ffd75f', bad: '#ff5f5f' } },
+  nord: { bar: 'pill', palette: NORD },
+  ocean: { bar: 'dots', palette: OCEAN },
+  mono: { bar: 'ascii', palette: null },
 }
 
 function snapshotFor(specState: string): Record<string, unknown> {
@@ -79,12 +89,11 @@ function snapshotFor(specState: string): Record<string, unknown> {
     },
     gate_b: { state: 'in review', green: false, blocking: 0, proposed: 1, rounds: 1 },
     findings: [{ id: 'F1', severity: 'High', lens: 'logic', where: 'ledger.go:88', title: 'Counter read before the lock', state: 'proposed' }],
-    deciders: { enabled: true, mode: 'council', council: ['jev', 'groq', 'ollama'], order: ['jev'], ready: ['jev', 'ollama'], labels: {}, last: null },
   }
 }
 
-function world(on: On, specState = 'approved'): World {
-  mock.store(on)
+function world(on: On, specState = 'approved', stored: Record<string, unknown> = {}): World {
+  mock.store(on, stored)
   const state: World = {
     argv: [],
     snapshot: snapshotFor(specState),
@@ -96,6 +105,7 @@ function world(on: On, specState = 'approved'): World {
     docs: { 'spec.md': '# SPEC: Daily withdrawal limit\n\n<!-- template note -->\nThe limit text.', 'tasks.md': '# TASKS\n\n- [x] T1', 'log.md': '# LOG\n\n## spec approved', 'scenarios.md': '# SCENARIOS\n\n## WDL-1\n- Given a balance over the limit, when withdrawing, then it is refused' },
     opened: [],
     hold: null,
+    failSet: false,
   }
   on('session.start', () => ({ cwd: REPO }))
   on('session.cwd', () => ({ value: REPO }))
@@ -126,6 +136,12 @@ function world(on: On, specState = 'approved'): World {
     if (script.endsWith('craft-approve')) {
       state.snapshot = snapshotFor('approved')
       return { value: { exitCode: 0, stdout: 'Approved.', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (script.endsWith('craft-statusline') && state.failSet && argv[2] === '--set-theme') {
+      return { value: { exitCode: 1, stdout: '', stderr: 'cannot save', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (script.endsWith('craft-statusline') && argv.includes('--themes-json')) {
+      return { value: { exitCode: 0, stdout: JSON.stringify({ themes: THEMES }), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     }
     if (script.endsWith('craft-spec')) return { value: { exitCode: 1, stdout: 'trace: x\nresult: FAIL — 1 of 2 criteria have a test\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
     return { value: { exitCode: 0, stdout: 'ok', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -275,6 +291,19 @@ test('with status "both" the band shows the gates and the cost', { options: { st
     expect(await ui.find({ key: 'band-board' })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('auto_check hands a compound command to craft-check as one quoted argument', { options: { auto_check: true } }, async ($, on) => {
+  world(on, 'approved')
+  const seen: string[] = []
+  on('tool.call', { tool: 'Bash' }, (_$, e) => {
+    seen.push(String((e as unknown as { command: string }).command))
+    return { result: 'ok' }
+  })
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: "pytest apps -q && echo 'done'" } as never)
+  expect(seen.length).toBe(1)
+  expect(seen[0]).toContain("--junit auto -- 'pytest apps -q && echo '\\''done'\\'''")
 })
 
 test('the spec gate asks, and approving in the dialog lets the write through', async ($, on) => {
@@ -429,13 +458,13 @@ test('CMOD-5: a notice clears 8 seconds after it is shown, and a newer notice re
   await ui.press({ key: 'spec-trace' })
   expect(await ui.find({ type: 'Text', text: /^trace result: FAIL/ })).toBeDefined()
   await state.clock.advance(5_000)
-  await ui.press({ key: 'tab-deciders' })
-  await ui.press({ key: 'decider-mode' })
-  expect(await ui.find({ type: 'Text', text: /^decider mode: first/ })).toBeDefined()
+  await ui.press({ key: 'tab-review' })
+  await ui.press({ key: 'confirm-F1' })
+  expect(await ui.find({ type: 'Text', text: /^F1 → confirmed/ })).toBeDefined()
   await state.clock.advance(4_000)
-  expect(await ui.find({ type: 'Text', text: /^decider mode: first/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^F1 → confirmed/ })).toBeDefined()
   await state.clock.advance(4_500)
-  expect(await ui.find({ type: 'Text', text: /^decider mode: first/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^F1 → confirmed/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -771,5 +800,73 @@ test('TSC-13: l shifts long row text behind … with the ID in place, stops at i
   await ui.press({ key: 'tab-tasks' })
   await ui.press({ key: 'tab-spec' })
   expect(await row(0)).toBe(true)
+  await ui.unmount()
+})
+
+test('CRF-21: /craft-theme opens the Theme tab with a preview row per theme in its colours, and a pick runs --set-theme with no Claude turn', async ($, on) => {
+  const state = world(on)
+  await start($)
+  const answer = await $.command.run({ command: 'craft-theme', args: '' } as never)
+  expect(answer).toEqual({})
+  expect(state.opened.at(-1)).toMatchObject({ id: 'craft-board' })
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  await ui.press({ key: 'tab-theme' })
+  for (const name of Object.keys(THEMES)) expect(await ui.find({ key: 'theme-' + name })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^nord/ }))?.props.color).toBe(NORD.accent)
+  expect((await ui.find({ type: 'Text', text: /^ocean/ }))?.props.color).toBe(OCEAN.accent)
+  expect((await ui.find({ key: 'tab-theme' }))?.props.hotkey).toBe('7')
+  // One cursor: j moves the marker to nord, and a applies the marked row.
+  await ui.press({ key: 'theme-down' })
+  await ui.press({ key: 'theme-apply' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-statusline')).toContainEqual(['--set-theme', 'nord'])
+  expect(await ui.find({ type: 'Text', text: /Theme set to nord/ })).toBeDefined()
+  // Enter on a row that is not marked only marks it; Enter on the marked row applies it.
+  await ui.press({ key: 'theme-ocean' })
+  expect(argvOf(state, 'craft-statusline')).not.toContainEqual(['--set-theme', 'ocean'])
+  await ui.press({ key: 'theme-ocean' })
+  await state.clock.settle()
+  expect(argvOf(state, 'craft-statusline')).toContainEqual(['--set-theme', 'ocean'])
+  expect(state.submitted).toEqual([])
+  await ui.unmount()
+})
+
+test('CRF-22: a theme option changed since last applied is written at session start once; none is recorded, a failed write is not retried, and a later pick is not overwritten', { options: { theme: 'ocean' } }, async ($, on) => {
+  // The last applied option was none: ocean is a change, but the write fails.
+  const state = world(on, 'approved', { appliedOptions: { theme: 'none' } })
+  state.failSet = true
+  await start($)
+  const sets = () => argvOf(state, 'craft-statusline').filter(argv => argv[0] === '--set-theme')
+  expect(sets()).toEqual([['--set-theme', 'ocean']])
+  // The failed write was recorded: the next start does not retry it.
+  state.failSet = false
+  await start($)
+  expect(sets()).toEqual([['--set-theme', 'ocean']])
+  // The developer picks nord in /craft-theme; the next session start finds the option already applied.
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  await ui.press({ key: 'tab-theme' })
+  await ui.press({ key: 'theme-nord' })
+  await ui.press({ key: 'theme-nord' })
+  await state.clock.settle()
+  await ui.unmount()
+  await start($)
+  expect(sets()).toEqual([['--set-theme', 'ocean'], ['--set-theme', 'nord']])
+})
+
+test('CRF-23: with a theme chosen the board draws its accent, ok mark, and warn level in the theme hex; with none it uses the theme keys', async ($, on) => {
+  const state = world(on)
+  state.snapshot.theme = { name: 'nord', chosen: true, palette: NORD, bar: 'pill' }
+  await start($)
+  const ui = await $.ui.mount({ plugin: 'craft-workflow', surface: 'terminal', component: 'Pane', requestId: 'craft-board', props: PANE_PROPS as never })
+  expect((await ui.find({ type: 'Text', text: /^🛠️ craft$/ }))?.props.color).toBe(NORD.accent)
+  expect((await ui.find({ type: 'Text', text: /^✓ approved$/ }))?.props.color).toBe(NORD.ok)
+  expect((await ui.find({ type: 'Text', text: /^60%$/ }))?.props.color).toBe(NORD.warn)
+  expect((await ui.find({ type: 'Text', text: /^spec\s*$/ }))?.props.color).toBe(NORD.dim)
+  state.snapshot.theme = { name: 'craft', chosen: false, palette: THEMES.craft.palette, bar: 'gradient-pill' }
+  await ui.press({ key: 'board-refresh' })
+  expect((await ui.find({ type: 'Text', text: /^🛠️ craft$/ }))?.props.color).toBe('claude')
+  expect((await ui.find({ type: 'Text', text: /^✓ approved$/ }))?.props.color).toBe('success')
+  expect((await ui.find({ type: 'Text', text: /^60%$/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Text', text: /^spec\s*$/ }))?.props.dimColor).toBe(true)
   await ui.unmount()
 })

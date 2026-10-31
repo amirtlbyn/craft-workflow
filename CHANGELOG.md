@@ -1,5 +1,134 @@
 # Changelog
 
+## 0.10.0 — 2026-10-31 — Harder gates, ask-first specs, model by difficulty, theme picker
+
+### What changed for the developer
+
+**Harder gates**
+
+- **Bash write gate.** While the spec gate is shut on `task` or `project`, a
+  Bash command that writes a repository path outside `.claude/` is denied:
+  `>`, `>>`, `tee`, `sed -i`, `cp`, `mv`, `rm`, `touch`, `git apply`, and a
+  Python, Node, Perl, or Ruby one-liner that writes a file. Reads, and writes
+  under `.claude/`, `/dev/null`, or outside the repository, still pass.
+- **After-check.** When a Bash call ends, even a failed one, the hook compares
+  the work tree. A tracked or untracked file that changed gets named, and
+  Claude must revert it. The `Stop` hook refuses to stop (up to three times)
+  until it does. A file that held your uncommitted work is restored from a
+  backup the hook took, never with `git checkout`.
+- **Approval protection.** Claude cannot run `craft-approve`, set `CRAFT_HOOKS`,
+  or turn hooks off (`disableAllHooks`, `claude plugin disable`). It cannot
+  write `approval.json`, even through a glob, variable, `xargs`, or symlink.
+  The denial prints the exact `! "<bin>/craft-approve"` line for you. The `!`
+  bash mode runs no hook, so that is your approval path. The board's `a` works
+  as before.
+- **State-file protection.** Writes to any `.claude/craft/*.json` file and to
+  `.claude/specs/ACTIVE` are denied, and so are the `bin/` subcommands that
+  change trusted state for Claude: `record-check` by hand, a route change to
+  `quick`, and `finding … --state` with any state but `fixed`. `craft-check`
+  and `craft-spec new` still write state as programs.
+- **Stale checks.** `bin/craft-check` records a fingerprint of the tracked and
+  untracked files outside `.claude/`. If a file changed after the last green
+  checkpoint, the `Stop` hook refuses a `done` claim, and the board shows the
+  check as `stale`. A check without a fingerprint counts as current.
+- **Exact checkpoint.** A green `pytest -k one_test` no longer stands in for the
+  checkpoint command. Only the command itself counts, after whitespace is
+  normalised.
+- **Gate B at Stop, with real reviewer spawns.** A `done` claim is refused when
+  no review round is recorded, when no round names a reviewer that was actually
+  spawned, when a Critical or High finding is confirmed and not fixed or never
+  adjudicated, or when the rounds miss a lens the diff needs.
+- **`bin/craft-spec lenses [--base REF] [--json]`** prints the lens floor of
+  the changed paths with one reason per lens. `Risk: high` always adds `logic`
+  and `security`.
+
+**Ask-first specs**
+
+- **The spec and planner skills ask first.** They ask each open question with
+  AskUserQuestion (2 to 4 options, the recommended one first) before drafting.
+  The Open questions table carries a Decision column, and each answer must say
+  `(developer`. `bin/craft-approve` refuses a spec with an unanswered or
+  assumed row (empty, TBD, `?`, n/a) and lists the rows.
+
+**Model by difficulty**
+
+- **Each session names its model.** `tasks.md` has a `Model:` line per session
+  (`haiku`, `sonnet`, or `opus`, with a reason). `bin/craft-spec status` shows
+  it, or `model: not chosen`. The `coder` agent is spawned with that model.
+  Spawning `coder` on `haiku` while the spec says `Risk: high` is denied: the
+  floor is `sonnet`.
+
+**Thin commands and new evals**
+
+- **Thin commands.** The command files for `/task`, `/project`, `/quick`,
+  `/implement`, `/review`, and `/spec` hold the minimum and point to the
+  skill. The detail lives in one place.
+- **New evals:** `bash-write-gated`, `done-needs-review`, `no-self-approve`,
+  `stale-check-refused`, `spec-asks-first`, and `model-by-difficulty`.
+
+**Theme picker**
+
+- **`/craft-theme`** opens the board on a new 🎨 Theme tab (key `7`). Every
+  theme is a preview row in its own colours with a sample usage bar. `j` and
+  `k` move, `a` applies the marked row, and Enter on the marked row does too. No Claude turn.
+- **One file, three ways in.** `bin/craft-statusline --set-theme NAME`,
+  `--set-bar STYLE`, `--unset`, and `--themes-json`, and the new `theme` and
+  `bar` plugin options. All write `~/.config/craft-workflow/statusline.json`
+  (`$XDG_CONFIG_HOME` is respected). The latest change from either place wins.
+  Precedence: flag, environment variable, file, default. An unknown name exits
+  1 and lists the valid names. A corrupt file falls back to the default.
+- **The board follows the theme.** `bin/craft-ui-state` prints a `theme` block.
+  With a craft theme chosen, the board draws its accent, ok, warn, bad, and dim
+  colours in that theme's hex colours. With none chosen, it keeps the engine's
+  theme colours.
+
+**Jev and the deciders are removed**
+
+- **Claude routes every request itself.** `/jev`, `/decide`, `bin/craft-jev`,
+  and `bin/craft-decide` are gone, with `config/jev.json`,
+  `config/deciders.json`, `scripts/deciders.py`, `scripts/jev_client.py`, and
+  the `jev` skill. The route, the risk tier, and the review lenses come from
+  `config/workflow.md` §2 and §3, as they always did with Jev off.
+- **The `jev_approve` hook is gone.** No hook answers `allow` any more. Tool
+  calls follow Claude Code's own permission rules.
+- **The 🧠 Deciders tab is gone.** Its `m` and `p` keys and
+  the deciders line on the Cost tab are gone; tab 7 is now 🎨 Theme. `bin/craft-ui-state` no longer
+  prints a `deciders` block.
+- **`config/workflow.md` §8 is now Stacks.** The Jev section is removed, and
+  the sections after it move up by one.
+- **Leftover state is ignored.** A repository that turned Jev on keeps
+  `.claude/craft/jev.json`, `deciders.json`, `jev-log.jsonl`, and
+  `jev-approvals.jsonl`. Nothing reads them. Delete them when you like.
+
+### Accepted limits
+
+- **Not a defence against a determined script.** The hooks run as your OS user.
+  They stop a well-meaning model's natural shortcuts and make tampering
+  visible. Writes from background or delayed processes (`&`, `nohup`,
+  `run_in_background`), a script that rewrites the hooks' own snapshots, and
+  unusual routes to disable the plugin (`npx claude …`, editing the plugin
+  registry) are not covered.
+- **No full shell parser.** The before-check knows the common write forms. The
+  after-check is the backstop for the rest.
+- **No automatic revert.** A hook never deletes or restores a file on its own.
+  It names the file and refuses the stop.
+- **No Codex hooks.** `.codex/hooks.json` still does not ship; Codex keeps the
+  rules as prose.
+- **No expiry for reviews.** Gate B does not re-open when code changes after a
+  review.
+- **No model change for the main session.** On `task`, a different model means
+  delegating to `coder`.
+- **The `quick` route** has no enforcement beyond Gate A, which is now
+  staleness-aware.
+- **Theme colours were not seen in a real terminal.** The tests check the hex
+  values the board passes, not how a terminal draws them.
+- **`none` and `default` plugin option values** mean "do not set a theme (or
+  bar)". Claude Code rejects an empty option, so there is no empty value.
+- **`CRAFT_STATUSLINE_THEME` or a `--theme` flag in `settings.json` still wins**
+  over the picker. The Theme tab and its notice say so when the variable is set.
+- **The status line picks a change up at its next refresh** (the refresh
+  interval in `settings.json`), not at once.
+
 ## 0.9.0 — 2026-10-14 — PHP: Laravel, Symfony, and plain PHP
 
 ### What changed for the developer

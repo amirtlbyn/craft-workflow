@@ -28,6 +28,11 @@ craft-checks:
   interruptible: true
   script:
     - python3 --version
+    # The Bash gate tests need git. The slim image has none.
+    - |
+      if ! command -v git >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends git >/dev/null
+      fi
     # A shell runner may have no pip. tomli is only needed on Python 3.10, and
     # without it sync_codex_selftest.py reports its TOML parse case as SKIPPED.
     - |
@@ -45,19 +50,19 @@ craft-checks:
 
     # 1b. The 0.7 machinery: stack detection, the checks each stack resolves,
     #     the concurrency verdicts, the language-neutral trace, craft-check's
-    #     summaries and JUnit XML, the deciders (against a local mock server),
-    #     and the snapshot the mod draws.
-    - echo "=== stacks, trace, deciders self-test ==="
+    #     summaries and JUnit XML, and the snapshot the mod draws.
+    - echo "=== stacks, trace, ui-state self-test ==="
     - python3 scripts/stack_selftest.py
 
-    # 1c. bin/craft-statusline: themes, bars, pace, and that bad input never
-    #     prints a traceback. Needs pytest; skipped where the runner has none.
-    - echo "=== status line ==="
+    # 1c. The criterion tests under tests/: the Bash gate and the approval
+    #     protection, the scenarios, the PHP stacks, and bin/craft-statusline.
+    #     Needs pytest; skipped where the runner has none.
+    - echo "=== criterion tests ==="
     - |
       if python3 -m pytest --version >/dev/null 2>&1; then
-        python3 -m pytest tests/test_craft_statusline.py -q
+        python3 -m pytest tests -q -p no:cacheprovider
       else
-        echo "pytest unavailable; skipping tests/test_craft_statusline.py"
+        echo "pytest unavailable; skipping tests/"
       fi
 
     # The mod itself is checked with `claude plugin validate .` and

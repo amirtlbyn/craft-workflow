@@ -1,5 +1,5 @@
 {
-  "comment": "The machine mirror of the path rules that config/workflow.md states in prose. workflow.md stays the human-readable source and wins every disagreement: change it first, then change this file to match. The hooks read this file so that a path question is answered the same way every time, instead of being re-inferred from prose on every turn. Matching uses fnmatch, so '*' crosses a directory separator: write '*/tests/*' and 'tests/*' as two patterns when you mean both. A glob that holds no '/' is also matched against the file name alone, so 'test_*.py' matches 'apps/wallet/tests/test_limit.py'. In this release two sets are read: protect_human_owned reads 'human_owned', and bin/craft-spec trace reads 'tests' to find the test files it maps to acceptance criteria. The spec gate (gate_spec) needs no glob set: it gates every path outside .claude/. The other five sets are recorded here for a route guard that is not wired yet. Nothing reads them today, so an entry there changes no behavior.",
+  "comment": "The machine mirror of the path rules that config/workflow.md states in prose. workflow.md stays the human-readable source and wins every disagreement: change it first, then change this file to match. The hooks read this file so that a path question is answered the same way every time, instead of being re-inferred from prose on every turn. Matching uses fnmatch, so '*' crosses a directory separator: write '*/tests/*' and 'tests/*' as two patterns when you mean both. A glob that holds no '/' is also matched against the file name alone, so 'test_*.py' matches 'apps/wallet/tests/test_limit.py'. In this release two sets are read: protect_human_owned reads 'human_owned', and bin/craft-spec trace reads 'tests' to find the test files it maps to acceptance criteria. The spec gate (gate_spec) needs no glob set: it gates every path outside .claude/. bin/craft-spec lenses and the Stop hook read 'money', 'auth', 'migrations', 'models', 'views', 'tests', and 'services' to find the lenses a diff earns (scripts/craft_state.py lens_floor).",
   "derived_from": {
     "tests": "workflow.md section 3, logic lens row: 'tests'. Section 4: every acceptance criterion has one test that names its ID.",
     "human_owned": "workflow.md section 1: every '*.human.md' document is marked 'No - human-owned'.",
@@ -7,7 +7,8 @@
     "auth": "workflow.md section 2: 'authentication, authorization'. Section 3, security lens row: 'permissions, authentication, tokens'.",
     "migrations": "workflow.md section 2: 'a schema migration' forces project. Section 3: logic and query lens rows.",
     "models": "workflow.md section 3, query lens row: 'Models, managers, querysets'.",
-    "views": "workflow.md section 3, security lens row: 'Views, serializers'."
+    "views": "workflow.md section 3, security lens row: 'Views, serializers'.",
+    "services": "workflow.md section 3, logic lens row: 'business logic'. The service, task, worker, and job files that carry it."
   },
   "tests": [
     "tests/*",
@@ -87,5 +88,24 @@
     "*/serializers/*.py",
     "api.py",
     "admin.py"
+  ],
+  "services": [
+    "services.py",
+    "services/*",
+    "*/services/*",
+    "*_service.py",
+    "*Service.java",
+    "*Service.kt",
+    "*.service.ts",
+    "*.service.js",
+    "service.go",
+    "tasks.py",
+    "tasks/*",
+    "*/tasks/*",
+    "workers/*",
+    "*/workers/*",
+    "worker.py",
+    "jobs/*",
+    "*/jobs/*"
   ]
 }
