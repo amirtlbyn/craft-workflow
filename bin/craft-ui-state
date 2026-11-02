@@ -10,8 +10,6 @@ every tool call that changes something:
     <repo>/.claude/craft/approval.json                  the approval, bound by SHA-256
     <repo>/.claude/craft/trace.json                     the last bin/craft-spec trace
     <repo>/.claude/craft/findings.json, reviews.json    review findings and rounds
-    <repo>/.claude/craft/jev.json, deciders.json        the decider switch and choices
-    <repo>/.claude/craft/jev-log.jsonl                  the last decisions
 
 Usage:
     bin/craft-ui-state [--cwd PATH] [--pretty]
@@ -24,7 +22,10 @@ passed. A check never run is "not run", not green.
 Exit code 0, always. Any problem becomes an "error" field.
 """
 
+import importlib.machinery
+import importlib.util
 import json
+import os
 import pathlib
 import re
 import sys
@@ -38,8 +39,19 @@ import craft_state  # noqa: E402
 CRITERION_ROW = re.compile(r"^\|\s*([A-Z][A-Z0-9]*-\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|")
 SECTION = re.compile(r"^##\s+(.+?)\s*$")
 GATE_A_LABELS = ("tests", "lint", "imports", "format", "types", "vet", "race")
-BLOCKING_SEVERITIES = ("critical", "high")
 OPEN_STATES = ("proposed", "confirmed", "plausible", "open")
+
+
+def theme_block(env):
+    """The status line's theme from craft-statusline, so the board and the line draw alike."""
+    loader = importlib.machinery.SourceFileLoader("craft_statusline", str(PLUGIN_ROOT / "bin" / "craft-statusline"))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("craft_statusline", loader))
+    loader.exec_module(module)
+    chosen, source = module.chosen_theme(env)
+    name = chosen or module.DEFAULT_THEME
+    palette = module.themes_json()["themes"][name]["palette"]
+    bar = module.resolve("bar", None, env)[0] or module.THEMES[name].bar
+    return {"name": name, "chosen": chosen is not None, "palette": palette, "bar": bar, "source": source}
 
 
 def argument(argv, flag, default=None):
@@ -97,26 +109,29 @@ def last_by_label(recorded):
             "at": check.get("at"),
             "command": str(check.get("command", ""))[:200],
             "summary": check.get("summary") or {},
+            "tree": check.get("tree") or "",
         }
     return latest
 
 
-def gate_a(latest, checkpoint, recorded):
+def gate_a(latest, checkpoint, recorded, current=None):
     items = []
     trace = latest.get("trace")
     items.append({"name": "trace", "ok": None if trace is None else trace["exit_code"] == 0,
                   "detail": "not run" if trace is None else "exit %s" % trace["exit_code"]})
-    tests = latest.get("tests")
-    if checkpoint:
-        matching = [check for check in recorded if str(check.get("command", "")).strip() == checkpoint.strip()]
-        if matching:
-            tests = {"exit_code": matching[-1].get("exit_code"), "summary": matching[-1].get("summary") or {}}
-    items.append({"name": "tests", "ok": None if tests is None else tests["exit_code"] == 0,
-                  "detail": "not run" if tests is None else (tests.get("summary") or {})})
+    # The tests item is the Stop hook's evidence rule: one function answers both.
+    check, state = craft_state.checkpoint_evidence(recorded=recorded, current=current, checkpoint=checkpoint or "")
+    if state == "not run":
+        items.append({"name": "tests", "ok": None, "detail": "not run"})
+    else:
+        detail = "stale" if state == "stale" else (check.get("summary") or "exit %s" % check.get("exit_code"))
+        items.append({"name": "tests", "ok": state == "ok", "detail": detail})
     for label in GATE_A_LABELS[1:]:
         if label in latest:
-            items.append({"name": label, "ok": latest[label]["exit_code"] == 0,
-                          "detail": latest[label].get("summary") or "exit %s" % latest[label]["exit_code"]})
+            ok = latest[label]["exit_code"] == 0
+            stale = ok and craft_state.check_is_stale(latest[label], current)
+            items.append({"name": label, "ok": ok and not stale,
+                          "detail": "stale" if stale else (latest[label].get("summary") or "exit %s" % latest[label]["exit_code"])})
     known = [item for item in items if item["ok"] is not None]
     return {
         "items": items,
@@ -125,64 +140,6 @@ def gate_a(latest, checkpoint, recorded):
         "green": bool(items) and all(item["ok"] for item in items),
         "started": bool(known),
     }
-
-
-def gate_b(findings, reviews, spec_name):
-    rounds = [item for item in reviews if not spec_name or item.get("spec") in (spec_name, None, "")]
-    last = rounds[-1] if rounds else None
-    blocking = [finding for finding in findings
-                if str(finding.get("severity", "")).lower() in BLOCKING_SEVERITIES
-                and str(finding.get("state", "open")).lower() in ("confirmed", "open")]
-    proposed = [finding for finding in findings if str(finding.get("state", "")).lower() == "proposed"]
-    if last is None:
-        state = "not run"
-    elif blocking:
-        state = "changes requested"
-    elif last.get("decision") == "APPROVE" and not proposed:
-        state = "green"
-    else:
-        state = "in review"
-    return {"state": state, "green": state == "green", "last_round": last, "blocking": len(blocking),
-            "proposed": len(proposed), "rounds": len(rounds)}
-
-
-def deciders_view(cwd):
-    try:
-        import deciders
-        import jev_client
-
-        config = deciders.load(cwd)
-        log_path = craft_state.state_path("jev-log.jsonl", cwd)
-        last = None
-        cost_total = 0.0
-        decisions = 0
-        try:
-            lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-            for line in lines[-2000:]:
-                try:
-                    record = json.loads(line)
-                except ValueError:
-                    continue
-                decisions += 1
-                if isinstance(record.get("cost"), (int, float)):
-                    cost_total += float(record["cost"])
-                last = record
-        except OSError:
-            last = None
-        return {
-            "enabled": jev_client.is_enabled(cwd),
-            "approve": jev_client.is_approve_enabled(cwd),
-            "mode": config.get("mode"),
-            "order": config.get("order") or [],
-            "council": config.get("council") or [],
-            "ready": deciders.available(config),
-            "labels": {name: (data or {}).get("label", name) for name, data in (config.get("providers") or {}).items()},
-            "last": last,
-            "decisions": decisions,
-            "cost_total": round(cost_total, 6),
-        }
-    except Exception as error:
-        return {"enabled": False, "error": type(error).__name__}
 
 
 def scenarios_view(cwd, rows):
@@ -244,12 +201,23 @@ def snapshot(cwd=None):
     recorded = craft_state.checks(str(root))
     latest = last_by_label(recorded)
     data["checks"] = latest
-    data["gate_a"] = gate_a(latest, data["session"]["checkpoint"], recorded)
+    needs_tree = any(check.get("tree") for check in recorded)
+    data["gate_a"] = gate_a(latest, data["session"]["checkpoint"], recorded,
+                            craft_state.tree_fingerprint(str(root)) if needs_tree else None)
     findings = [finding for finding in craft_state.read_findings(str(root))
                 if not spec_name or finding.get("spec") in (spec_name, None, "")]
     data["findings"] = findings[-50:]
-    data["gate_b"] = gate_b(findings, craft_state.read_reviews(str(root)), spec_name)
-    data["deciders"] = deciders_view(str(root))
+    try:
+        data["theme"] = theme_block(os.environ)
+    except Exception:
+        data["theme"] = {"name": "craft", "chosen": False, "palette": None, "bar": "", "source": ""}
+    reviews = craft_state.read_reviews(str(root))
+    floor = None
+    if data["session"]["route"] in ("task", "project") and any(
+            (item.get("spec") or "") == (spec_name or "") for item in reviews):
+        floor = craft_state.lens_floor(str(root))
+    data["gate_b"] = craft_state.gate_b(
+        craft_state.read_findings(str(root)), reviews, spec_name, floor, craft_state.reviewer_spawns(str(root)))
     return data
 
 

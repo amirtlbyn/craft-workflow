@@ -47,12 +47,6 @@ for it.
 
 ## Step 2 — Classify the request into a route
 
-When Jev is on (`bin/craft-jev status --quiet` exits 0, or the session-start
-status says `jev on`), load the `jev` skill and run
-`bin/craft-jev decide --stage route --request "<the request>"` first. Use its
-route, risk, implementer model, and skills as the `jev` skill says. When it is
-off or undecided, classify yourself.
-
 Apply `config/workflow.md` §2. State the route and one reason in one line, then
 continue. Do not ask for confirmation. The user overrides with "use route X".
 
@@ -85,14 +79,21 @@ No spec, no reviewer subagent, no files under `.claude/specs/`.
 ### task
 
 1. **Specify.** Load `spec` and follow it: `bin/craft-spec new --route task`,
-   write `spec.md`, present it, stop for approval, `bin/craft-approve`. Then
-   draft the scenarios with `bin/craft-scenarios draft`, present them, stop, and
-   run `bin/craft-approve --scenarios` only on the developer's word. The gate
+   write `spec.md`, present it, and stop for approval. The developer records it
+   with `! "<plugin root>/bin/craft-approve"` or the board. Then draft the
+   scenarios with `bin/craft-scenarios draft`, present them, and stop. The
+   developer records them with `! "<plugin root>/bin/craft-approve"
+   --scenarios`. Never run `craft-approve` yourself: a hook denies it. The gate
    keeps test files closed until then.
 2. **Tasks.** Write a short checklist into `tasks.md`. Each line names a file and
    the criterion it serves.
-3. **Implement in this session.** You already hold the context, so do not spawn
-   `coder`. Load the stack's skills (`bin/craft-stack skills --paths
+3. **Implement.** Pick the model (see "Pick the model" below). Write the
+   checklist under a `## Session 1` heading in `tasks.md`, with its
+   `Model: <id> — <reason>` line, so `bin/craft-spec status` shows it. You know
+   your own model from the model named in your environment or system prompt.
+   When the pick differs from it, delegate to `coder` with that model, the
+   plugin root, the spec directory, and session 1. When it is the same, or you
+   cannot tell your own model, implement in this session. Load the stack's skills (`bin/craft-stack skills --paths
    <files>`). Load `minimal-code` before you write new code. Load
    `concurrency` before you write concurrent code. Load
    `validation-discipline` before you add a check. Load `test-discipline`
@@ -102,11 +103,12 @@ No spec, no reviewer subagent, no files under `.claude/specs/`.
    `bin/craft-check` (the stack's rows: `bin/craft-stack checks`, plus `race`
    for Go concurrency). Pass `--junit auto` to a test runner that writes JUnit
    XML. Run `bin/craft-spec trace`. Fix until all are green.
-5. **Gate B.** Load `review-protocol`. When Jev is on, take the lenses from
-   `bin/craft-jev decide --stage review`. Otherwise route the lenses with §3. Spawn
+5. **Gate B.** Load `review-protocol`. Run `bin/craft-spec lenses`: that is the
+   floor of lenses, and you add more when the diff earns them (§3). Spawn
    `reviewer`, plus `deep-reviewer` in parallel when the spec says `Risk: high`.
    Give each one the plugin root, the spec directory, its lenses, and the diff
    command.
+   With the argument "full", spawn `reviewer` once per lens instead.
    Adjudicate with `skills/review-protocol/references/adjudication.md`.
 6. **Fix and close.** Fix confirmed findings. Re-review only the delta, only when
    a Critical or High was confirmed. Append the gates to `log.md`, tick
@@ -115,19 +117,48 @@ No spec, no reviewer subagent, no files under `.claude/specs/`.
 ### project
 
 1. **Specify** as on `task`, with `--route project`: write `spec.md`, present
-   it, stop for approval, `bin/craft-approve`.
+   it, and stop for approval. The developer records it.
 2. **Scenarios.** Draft them with `bin/craft-scenarios draft`, present them,
-   stop, and run `bin/craft-approve --scenarios` only on the developer's word.
+   and stop. The developer records the approval with `--scenarios`.
    Do this before the plan.
 3. `/design-brainstorm` when the shape is unsettled. `/arch` for a second
    opinion.
 4. **Plan.** `/plan` — `planner` writes `design.md` and the sessions in
    `tasks.md` from the approved spec.
-5. **Per session:** delegate to `coder` with the plugin root, the spec
+5. **Per session:** pick haiku, sonnet, or opus by difficulty (never haiku on
+   `Risk: high`), write `Model: <id> — <reason>` in the session block, and
+   delegate to `coder` with that model, the plugin root, the spec
    directory, and the session number. Do not paste the spec into the prompt.
    `coder` reads it. Then run Gate A yourself with `bin/craft-spec trace
    --session N`, review, adjudicate, fix, and append to `log.md`.
 6. `/finish` per merge request.
+
+### Pick the model
+
+Pick `haiku`, `sonnet`, or `opus` per session, by difficulty:
+
+- **haiku**: mechanical, low-risk, well specified.
+- **sonnet**: normal work.
+- **opus**: security boundaries, cross-cutting or subtle logic, hard debugging.
+
+Tie-breakers. Between sonnet and opus, pick opus when the session spans more
+than one app, or touches a security boundary, money, or concurrency. Between
+haiku and sonnet, pick sonnet when the session has more than one criterion or
+any new logic.
+
+`Risk: high` gates the whole spec: when the spec says it, no session gets
+haiku, whatever its difficulty. The hook denies a haiku `coder` spawn there.
+
+### Review and implement details
+
+- On `Risk: high`, `reviewer` gets the routed lenses except `logic` and
+  `security`. `deep-reviewer` gets those two. A reviewer never edits code.
+- `/review` with no active spec reviews the uncommitted diff, with the `spec`
+  lens omitted. `/review full` spawns one `reviewer` per lens, in parallel.
+- `/implement` with no argument takes the first session in `tasks.md` whose
+  state is `pending` or `in progress`, and spawns `coder` with that session's
+  `Model:` line.
+- On `quick`, report `done` only when both gates pass.
 
 ## Step 4 — Nothing is done until both gates are green
 
@@ -135,7 +166,11 @@ No spec, no reviewer subagent, no files under `.claude/specs/`.
   criterion, the checkpoint ran through `bin/craft-check` and passed, and lint,
   import order, and format pass.
 - **Gate B — review green.** Every routed lens ran, no Confirmed Critical or
-  High finding is open, and every lens checklist item is answered.
+  High finding is open, and every lens checklist item is answered. The `Stop`
+  hook refuses `done` on `task` and `project` until a review round is recorded
+  with `craft-session record-review --reviewers …` naming a reviewer you really spawned, no Critical or High
+  finding is confirmed or still proposed, and the rounds cover the floor. You mark a finding `fixed`;
+  only the developer rejects one.
 
 On `quick`, Gate A is the focused checks and Gate B is your own style-lens read.
 

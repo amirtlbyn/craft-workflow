@@ -10,7 +10,7 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
 
-import type { CostBook, DocName, GateItem, Snapshot, Tab } from '../../types'
+import type { CostBook, DocName, GateItem, Snapshot, Tab, ThemeBlock, ThemeRow } from '../../types'
 import {
   DEFAULT_PRICES,
   GATE_EMOJI,
@@ -19,6 +19,8 @@ import {
   bar,
   bookTotal,
   cacheRate,
+  color,
+  dimProps,
   docText,
   gateBText,
   inCraftArea,
@@ -40,7 +42,6 @@ import {
   summaryText,
   tokens,
   usd,
-  voteText,
 } from './view'
 import type { PriceRow } from './view'
 
@@ -52,7 +53,7 @@ const TABS: { id: Tab; label: string; hotkey: string }[] = [
   { id: 'gates', label: 'Gates', hotkey: '4' },
   { id: 'review', label: 'Review', hotkey: '5' },
   { id: 'cost', label: 'Cost', hotkey: '6' },
-  { id: 'deciders', label: 'Deciders', hotkey: '7' },
+  { id: 'theme', label: '🎨 Theme', hotkey: '7' },
 ]
 // The document viewer: the active spec's files, one hotkey each.
 const VIEWER = 'craft-doc'
@@ -89,6 +90,10 @@ const scenarioCursor = atom({ plugin: 'craft-workflow', key: 'scenarioCursor' } 
 const deleteScenario = atom({ plugin: 'craft-workflow', key: 'deleteScenario' } as const, null)
 // How many columns the long text of the board's rows is shifted left.
 const hscroll = atom({ plugin: 'craft-workflow', key: 'hscroll' } as const, 0)
+// Every craft theme's hex palette and bar, from `craft-statusline --themes-json`.
+const themes = atom({ plugin: 'craft-workflow', key: 'themes' } as const, null)
+// The highlighted theme on the Theme tab, by name.
+const themeCursor = atom({ plugin: 'craft-workflow', key: 'themeCursor' } as const, '')
 // The sha of the scenarios the confirm was opened for; '' when closed.
 const confirmScenarios = atom({ plugin: 'craft-workflow', key: 'confirmScenarios' } as const, '')
 
@@ -105,6 +110,8 @@ let autoCheck = false
 let gateQuestion = true
 let savingScenario = false
 let addCount = 0
+let optionTheme = ''
+let optionBar = ''
 
 // ---------------------------------------------------------------------------
 // State
@@ -378,20 +385,6 @@ async function retrace($: EngineInterface) {
   return result
 }
 
-async function toggleMode($: EngineInterface) {
-  const current = await read($, snapshot)
-  const mode = current?.deciders?.mode === 'council' ? 'first' : 'council'
-  const result = await runCraft($, 'craft-decide', ['mode', mode])
-  await setNotice($, result.code === 0 ? `decider mode: ${mode}` : '✗ ' + result.out.slice(0, 160))
-  await refresh($)
-}
-
-async function pingDeciders($: EngineInterface) {
-  await setNotice($, 'asking every decider in the chain…')
-  const result = await runCraft($, 'craft-decide', ['test'])
-  await setNotice($, result.out.trim().split('\n').slice(0, 6).join('\n') || 'no answer')
-}
-
 async function loadPrices($: EngineInterface) {
   try {
     const text = await $.fs.read($.plugin.root + '/config/prices.json')
@@ -430,6 +423,39 @@ function gatesText(current: Snapshot | null): string {
   return lines.join('\n')
 }
 
+async function loadThemes($: EngineInterface) {
+  const result = await runCraft($, 'craft-statusline', ['--themes-json'])
+  try {
+    const parsed = JSON.parse(result.out) as { themes?: Record<string, ThemeRow> }
+    await update($, themes, () => parsed.themes ?? null)
+  } catch {
+    await update($, themes, () => null)
+  }
+}
+
+/**
+ * Write a plugin option to the theme file only when it changed since the mod last applied it,
+ * so a pick made in /craft-theme is not overwritten at the next start (CRF-22).
+ */
+async function applyOptions($: EngineInterface) {
+  const applied = ((await $.store.get('appliedOptions')) as Record<string, string> | undefined) ?? {}
+  const next = { ...applied }
+  for (const [name, value, flag] of [['theme', optionTheme, '--set-theme'], ['bar', optionBar, '--set-bar']] as const) {
+    if (!value || value === applied[name]) continue
+    // none and default mean "set nothing"; a failed write is recorded too, so it is not retried over a later pick.
+    if (value !== 'none' && value !== 'default') await runCraft($, 'craft-statusline', [flag, value])
+    next[name] = value
+  }
+  await $.store.set('appliedOptions', next)
+}
+
+async function applyTheme($: EngineInterface, name: string) {
+  const result = await runCraft($, 'craft-statusline', ['--set-theme', name])
+  const overridden = (await read($, snapshot))?.theme?.source === 'env' ? ' CRAFT_STATUSLINE_THEME is set and overrides it.' : ''
+  await setNotice($, result.code === 0 ? `Theme set to ${name}. The status line uses it from its next refresh.${overridden}` : result.out.trim().slice(0, 200))
+  await refresh($)
+}
+
 /** The confirm before craft-approve runs, on the board and in the viewer (CMOD-3, CSL-11). */
 function approvalBox(
   $: EngineInterface,
@@ -452,11 +478,11 @@ function approvalBox(
 }
 
 /** `trace ✓ tests ✗ lint ○`: each Gate A check by name, its glyph in colour. */
-function gateStrip(Text: ElementTable['Text'], items: readonly GateItem[]) {
+function gateStrip(Text: ElementTable['Text'], items: readonly GateItem[], theme?: ThemeBlock | null) {
   return items.map(item => (
     <Text key={'strip-' + item.name}>
       {' ' + item.name + ' '}
-      <Text color={markColor(item.ok)}>{mark(item.ok)}</Text>
+      <Text color={markColor(item.ok, theme)}>{mark(item.ok)}</Text>
     </Text>
   ))
 }
@@ -469,9 +495,13 @@ export const register: Register = (on, options) => {
   placement = String((options as Record<string, unknown>)?.status ?? 'top')
   autoCheck = Boolean((options as Record<string, unknown>)?.auto_check ?? false)
   gateQuestion = (options as Record<string, unknown>)?.gate_question !== false
+  optionTheme = String((options as Record<string, unknown>)?.theme ?? '')
+  optionBar = String((options as Record<string, unknown>)?.bar ?? '')
 
   on('session.start', async ($, e, next) => {
     await loadPrices($)
+    await applyOptions($)
+    await loadThemes($)
     const first = await refresh($)
     $.clock.every(REFRESH_EVERY_MS, () => refresh($))
     if ((placement === 'top' || placement === 'both') && first.spec?.name) {
@@ -479,10 +509,11 @@ export const register: Register = (on, options) => {
       await update($, placed, () => Boolean(result.isPlaced))
     }
     try {
-      await $.command.register({ name: 'craft-board', description: '🗂 Open the craft board: spec, tasks, gates, review, cost, deciders', immediate: true })
+      await $.command.register({ name: 'craft-board', description: '🗂 Open the craft board: spec, tasks, scenarios, gates, review, cost', immediate: true })
       await $.command.register({ name: 'craft-status', description: '🛠️ Where the active spec stands, in a few lines. No Claude turn', immediate: true })
       await $.command.register({ name: 'craft-cost', description: '💰 What each agent cost on this spec', immediate: true })
       await $.command.register({ name: 'craft-gates', description: '🚦 Gate A and Gate B, check by check. No Claude turn', immediate: true })
+      await $.command.register({ name: 'craft-theme', description: '🎨 Pick the status line and board theme. No Claude turn', immediate: true })
       await $.command.register({ name: 'craft-trace', description: '🔗 Map each criterion to its test now. No Claude turn', immediate: true })
     } catch (error) {
       $.ui.log('craft: a command name is taken: ' + String(error).slice(0, 120))
@@ -503,6 +534,11 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'craft-cost' }, async $ => {
     await openBoard($, 'cost')
+    return {}
+  })
+
+  on('command.run', { command: 'craft-theme' }, async $ => {
+    await openBoard($, 'theme')
     return {}
   })
 
@@ -595,7 +631,8 @@ export const register: Register = (on, options) => {
     const current = await read($, snapshot)
     let rewritten = e
     if (autoCheck && current?.session?.active && TEST_COMMAND.test(command) && !command.includes('craft-check')) {
-      rewritten = { ...e, command: `"${$.plugin.root}/bin/craft-check" --junit auto -- ${command}` }
+      // One quoted argument: craft-check runs it as one shell string and records all of it.
+      rewritten = { ...e, command: `"${$.plugin.root}/bin/craft-check" --junit auto -- '${command.replace(/'/g, `'\\''`)}'` }
     }
     const ran = await next(rewritten)
     if (command.includes('craft-') || TEST_COMMAND.test(command)) scheduleRefresh($)
@@ -635,26 +672,27 @@ export const register: Register = (on, options) => {
     const usage = await $.session.usage()
     const { Box, Text, Button } = $.ui.resolve(e)
     const spec = current.spec
-    const state = specState(spec?.state)
-    const gateB = gateBText(current.gate_b?.state)
+    const theme = current.theme
+    const state = specState(spec?.state, theme)
+    const gateB = gateBText(current.gate_b?.state, theme)
     const fiveHour = usage.rateLimits.find(limit => limit.kind === 'five_hour')
     const waiting = spec?.state === 'not approved' || spec?.state === 'stale'
     return (
       <Box flexDirection="row" columnGap={2}>
         <Text wrap="truncate-end">
-          <Text color="claude" bold>🛠️ craft</Text>
-          <Text dimColor>{'  ' + (current.session?.route ?? '')}</Text>
+          <Text color={color('accent', theme)} bold>🛠️ craft</Text>
+          <Text {...dimProps(theme)}>{'  ' + (current.session?.route ?? '')}</Text>
           {spec?.name ? `  ${spec.key} ${spec.title.slice(0, 40)}` : '  no active spec'}
-          {spec?.risk === 'high' && <Text color="error">{'  risk high'}</Text>}
-          <Text dimColor>{'  │  spec '}</Text>
+          {spec?.risk === 'high' && <Text color={color('bad', theme)}>{'  risk high'}</Text>}
+          <Text {...dimProps(theme)}>{'  │  spec '}</Text>
           <Text color={state.color}>{state.glyph}</Text>
-          <Text dimColor>{'  A'}</Text>
-          {gateStrip(Text, current.gate_a?.items ?? [])}
-          <Text dimColor>{'  B '}</Text>
+          <Text {...dimProps(theme)}>{'  A'}</Text>
+          {gateStrip(Text, current.gate_a?.items ?? [], theme)}
+          <Text {...dimProps(theme)}>{'  B '}</Text>
           <Text color={gateB.color}>{gateB.glyph}</Text>
-          <Text dimColor>{'  │  '}</Text>
+          <Text {...dimProps(theme)}>{'  │  '}</Text>
           {usd(bookTotal(book)) + '  5h '}
-          <Text color={levelColor(fiveHour?.percentUsed)}>{pct(fiveHour?.percentUsed)}</Text>
+          <Text color={levelColor(fiveHour?.percentUsed, theme)}>{pct(fiveHour?.percentUsed)}</Text>
           {'  ctx ' + pct(usage.context.percent)}
         </Text>
         <Button key="band-board" label="board" hotkey="1" plain dimColor onPress={() => openBoard($, null)} />
@@ -681,9 +719,12 @@ export const register: Register = (on, options) => {
     const usage = await $.session.usage()
     const width = Math.max(30, e.props.bodyColumns ?? 60)
     const spec = current?.spec
-    const state = specState(spec?.state)
-    const gateB = gateBText(current?.gate_b?.state)
-    const scenarios = scenariosGlyph(current?.scenarios?.state)
+    const theme = current?.theme
+    const state = specState(spec?.state, theme)
+    const gateB = gateBText(current?.gate_b?.state, theme)
+    const scenarios = scenariosGlyph(current?.scenarios?.state, theme)
+    const allThemes = await read($, themes)
+    const pickedTheme = await read($, themeCursor)
     const editing = await read($, editScenario)
     const opened = await read($, editOpened)
     const cursor = await read($, scenarioCursor)
@@ -704,30 +745,30 @@ export const register: Register = (on, options) => {
     const barWidth = Math.max(10, Math.min(30, width - 34))
 
     const header = (
-      <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+      <Box flexDirection="column" borderStyle="round" borderColor={color('accent', theme)} paddingX={1}>
         <Box flexDirection="row" justifyContent="space-between" columnGap={2}>
           <Text wrap="truncate-end">
-            <Text color="claude" bold>🛠️ craft</Text>
-            <Text dimColor>{'  ' + (route || 'idle')}</Text>
+            <Text color={color('accent', theme)} bold>🛠️ craft</Text>
+            <Text {...dimProps(theme)}>{'  ' + (route || 'idle')}</Text>
             {spec?.name && <Text bold>{`  ${spec.key} ${spec.title}`}</Text>}
-            {spec?.risk === 'high' && <Text color="error">{'  risk high'}</Text>}
+            {spec?.risk === 'high' && <Text color={color('bad', theme)}>{'  risk high'}</Text>}
           </Text>
           <Text>
             <Text bold>{usd(bookTotal(book))}</Text>
-            <Text dimColor>{'  5h '}</Text>
-            <Text color={levelColor(fiveHour?.percentUsed)}>{pct(fiveHour?.percentUsed)}</Text>
-            <Text dimColor>{'  ctx '}</Text>
-            <Text color={levelColor(usage.context.percent)}>{pct(usage.context.percent)}</Text>
+            <Text {...dimProps(theme)}>{'  5h '}</Text>
+            <Text color={levelColor(fiveHour?.percentUsed, theme)}>{pct(fiveHour?.percentUsed)}</Text>
+            <Text {...dimProps(theme)}>{'  ctx '}</Text>
+            <Text color={levelColor(usage.context.percent, theme)}>{pct(usage.context.percent)}</Text>
           </Text>
         </Box>
         <Text wrap="truncate-end">
-          <Text dimColor>{'spec '}</Text>
+          <Text {...dimProps(theme)}>{'spec '}</Text>
           <Text color={state.color}>{`${state.glyph} ${state.text}`}</Text>
-          <Text dimColor>{'   A'}</Text>
-          {gateStrip(Text, current?.gate_a?.items ?? [])}
-          <Text dimColor>{'   B '}</Text>
+          <Text {...dimProps(theme)}>{'   A'}</Text>
+          {gateStrip(Text, current?.gate_a?.items ?? [], theme)}
+          <Text {...dimProps(theme)}>{'   B '}</Text>
           <Text color={gateB.color}>{`${gateB.glyph} ${current?.gate_b?.state ?? 'not run'}`}</Text>
-          <Text dimColor>{'   S '}</Text>
+          <Text {...dimProps(theme)}>{'   S '}</Text>
           <Text color={scenarios.color}>{scenarios.glyph}</Text>
         </Text>
       </Box>
@@ -743,18 +784,18 @@ export const register: Register = (on, options) => {
             await update($, hscroll, () => 0)
             await update($, tab, () => item.id)
           }}>
-            {active === item.id ? <Text inverse bold>{` ${item.label} `}</Text> : <Text dimColor>{` ${item.label} `}</Text>}
+            {active === item.id ? <Text inverse bold>{` ${item.label} `}</Text> : <Text {...dimProps(theme)}>{` ${item.label} `}</Text>}
           </Button>
         ))}
       </Box>
     )
 
-    let body = <Text dimColor>Loading…</Text>
+    let body = <Text {...dimProps(theme)}>Loading…</Text>
     if (!current || current.error) {
-      body = <Text color="error">{(current?.error ?? 'No state yet.') + ' Press r to retry.'}</Text>
+      body = <Text color={color('bad', theme)}>{(current?.error ?? 'No state yet.') + ' Press r to retry.'}</Text>
     } else if (active === 'spec') {
       if (!spec?.name) {
-        body = <Text dimColor>No active spec. /craft {'<request>'} starts one on the task or project route.</Text>
+        body = <Text {...dimProps(theme)}>No active spec. /craft {'<request>'} starts one on the task or project route.</Text>
       } else {
         const confirm = asking && spec.state !== 'approved' && approvalBox($, { Box, Text, Button }, spec, 'the craft board')
         const approveButton = spec.state !== 'approved' && !asking && (
@@ -764,7 +805,7 @@ export const register: Register = (on, options) => {
           <Box flexDirection="column">
             {confirm}
             <Text bold>{`📋 ${spec.key} · ${spec.title}`}</Text>
-            <Text dimColor>
+            <Text {...dimProps(theme)}>
               {`${state.text}${spec.approved_at ? ' ' + spec.approved_at.slice(0, 16).replace('T', ' ') : ''} · sha ${spec.sha} · `}
               {spec.traced !== undefined ? `traced ${spec.traced}/${spec.criteria.length}` : 'not traced yet'}
             </Text>
@@ -774,10 +815,10 @@ export const register: Register = (on, options) => {
               const ok = traced ? row.tests!.length > 0 : null
               return (
                 <Text key={'crit-' + row.id} wrap="truncate-end">
-                  <Text color={markColor(ok)}>{mark(ok) + ' '}</Text>
+                  <Text color={markColor(ok, theme)}>{mark(ok) + ' '}</Text>
                   <Text bold>{row.id.padEnd(8)}</Text>
                   {fit(row.text.replace(/\s+/g, ' '), 10 + (row.developer ? 6 : 0))}
-                  {row.developer && <Text color="suggestion">{' [you]'}</Text>}
+                  {row.developer && <Text color={color('accent', theme)}>{' [you]'}</Text>}
                 </Text>
               )
             })}
@@ -795,28 +836,28 @@ export const register: Register = (on, options) => {
       const done = items.filter(task => task.done).length
       const nextIndex = items.findIndex(task => !task.done)
       body = items.length === 0 ? (
-        <Text dimColor>No tasks yet. On a task, the checklist goes in tasks.md after approval; on a project, /plan writes it.</Text>
+        <Text {...dimProps(theme)}>No tasks yet. On a task, the checklist goes in tasks.md after approval; on a project, /plan writes it.</Text>
       ) : (
         <Box flexDirection="column">
           <Text>
             <Text bold>✅ Tasks</Text>
-            <Text dimColor>{`  ${done} of ${items.length} done${spec?.tasks_state ? ' · ' + spec.tasks_state : ''}`}</Text>
+            <Text {...dimProps(theme)}>{`  ${done} of ${items.length} done${spec?.tasks_state ? ' · ' + spec.tasks_state : ''}`}</Text>
           </Text>
-          <Text color="success">{bar(done / items.length, barWidth)}</Text>
+          <Text color={color('ok', theme)}>{bar(done / items.length, barWidth)}</Text>
           <Text>{' '}</Text>
           {items.map((task, index) => (
             <Text key={'task-' + index} wrap="truncate-end">
               {task.done ? (
-                <Text color="success">{'✓ '}</Text>
+                <Text color={color('ok', theme)}>{'✓ '}</Text>
               ) : index === nextIndex ? (
-                <Text color="claude" bold>{'▸ '}</Text>
+                <Text color={color('accent', theme)} bold>{'▸ '}</Text>
               ) : (
-                <Text dimColor>{'○ '}</Text>
+                <Text {...dimProps(theme)}>{'○ '}</Text>
               )}
-              {index === nextIndex ? <Text bold>{fit(task.text, 2)}</Text> : <Text dimColor={task.done}>{fit(task.text, 2)}</Text>}
+              {index === nextIndex ? <Text bold>{fit(task.text, 2)}</Text> : <Text {...(task.done ? dimProps(theme) : {})}>{fit(task.text, 2)}</Text>}
             </Text>
           ))}
-          {current.session?.checkpoint && <Text dimColor>{'\ncheckpoint: ' + current.session.checkpoint}</Text>}
+          {current.session?.checkpoint && <Text {...dimProps(theme)}>{'\ncheckpoint: ' + current.session.checkpoint}</Text>}
           <Button key="tasks-read" label="read tasks.md" hotkey="o" plain dimColor onPress={() => openViewer($, 'tasks')} />
         </Box>
       )
@@ -828,16 +869,16 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           <Text>
             <Text bold>🚦 Gate A — spec verified</Text>
-            <Text color={gateA?.green ? 'success' : 'subtle'}>{gateA ? `  ${gateA.passed}/${gateA.total}` : ''}</Text>
+            <Text color={gateA?.green ? color('ok', theme) : color('dim', theme)}>{gateA ? `  ${gateA.passed}/${gateA.total}` : ''}</Text>
           </Text>
           {items.length === 0 ? (
-            <Text dimColor>{`  No check recorded yet. bin/craft-check -- ${current.session?.checkpoint || '<checkpoint>'} records one.`}</Text>
+            <Text {...dimProps(theme)}>{`  No check recorded yet. bin/craft-check -- ${current.session?.checkpoint || '<checkpoint>'} records one.`}</Text>
           ) : (
             items.map(item => (
               <Text key={'gate-' + item.name} wrap="truncate-end">
                 {'  ' + item.name.padEnd(9)}
-                <Text color={markColor(item.ok)}>{mark(item.ok)}</Text>
-                <Text dimColor>{'  ' + fit(summaryText(item.detail), 14)}</Text>
+                <Text color={markColor(item.ok, theme)}>{mark(item.ok)}</Text>
+                <Text {...dimProps(theme)}>{'  ' + fit(summaryText(item.detail), 14)}</Text>
               </Text>
             ))
           )}
@@ -846,12 +887,12 @@ export const register: Register = (on, options) => {
             <Text bold>Gate B — review green</Text>
             <Text color={gateB.color}>{`  ${gateB.glyph} ${current.gate_b?.state ?? 'not run'}`}</Text>
           </Text>
-          <Text dimColor>{`  ${current.gate_b?.rounds ?? 0} round(s) · ${current.gate_b?.blocking ?? 0} blocking · ${current.gate_b?.proposed ?? 0} to adjudicate`}</Text>
+          <Text {...dimProps(theme)}>{`  ${current.gate_b?.rounds ?? 0} round(s) · ${current.gate_b?.blocking ?? 0} blocking · ${current.gate_b?.proposed ?? 0} to adjudicate`}</Text>
           <Text>{' '}</Text>
-          <Text dimColor wrap="truncate-end">
+          <Text {...dimProps(theme)} wrap="truncate-end">
             {`stack ${current.stack?.primary ?? '?'}${concurrency?.verdict ? ` · concurrency ${concurrency.model} ${concurrency.verdict}` : ''}`}
           </Text>
-          <Text dimColor>The Stop hook refuses "done" until both gates are green.</Text>
+          <Text {...dimProps(theme)}>The Stop hook refuses "done" until both gates are green.</Text>
         </Box>
       )
     } else if (active === 'review') {
@@ -862,20 +903,20 @@ export const register: Register = (on, options) => {
       const waiting = findings.filter(isWaiting)
       const first = waiting[0]?.id
       body = findings.length === 0 ? (
-        <Text dimColor>No findings yet. /review runs the reviewer, and adjudication records them here.</Text>
+        <Text {...dimProps(theme)}>No findings yet. /review runs the reviewer, and adjudication records them here.</Text>
       ) : (
         <Box flexDirection="column">
           <Text>
             <Text bold>🔍 Review</Text>
-            <Text dimColor>{`  ${findings.length} finding(s) · ${waiting.length} waiting for you`}</Text>
+            <Text {...dimProps(theme)}>{`  ${findings.length} finding(s) · ${waiting.length} waiting for you`}</Text>
           </Text>
           {findings.slice(0, 12).map((finding, index) => (
             <Box key={'finding-' + (finding.id ?? index)} flexDirection="column" marginTop={1}>
               <Text wrap="truncate-end">
-                <Text color={severityColor(finding.severity)} bold>{String(finding.severity ?? '?').toUpperCase().padEnd(9)}</Text>
+                <Text color={severityColor(finding.severity, theme)} bold>{String(finding.severity ?? '?').toUpperCase().padEnd(9)}</Text>
                 <Text bold>{finding.id ?? ''}</Text>
-                <Text dimColor>{` ${finding.lens ?? ''} · ${finding.where ?? ''}  `}</Text>
-                <Text color={finding.state === 'confirmed' ? 'error' : finding.state === 'fixed' ? 'success' : 'warning'}>{finding.state ?? ''}</Text>
+                <Text {...dimProps(theme)}>{` ${finding.lens ?? ''} · ${finding.where ?? ''}  `}</Text>
+                <Text color={finding.state === 'confirmed' ? color('bad', theme) : finding.state === 'fixed' ? color('ok', theme) : color('warn', theme)}>{finding.state ?? ''}</Text>
               </Text>
               <Text wrap="truncate-end">{'         ' + fit(finding.title ?? '', 9)}</Text>
               {isWaiting(finding) && (
@@ -897,95 +938,89 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column">
           <Text>
             <Text bold>{`💰 Cost${spec?.key ? ' · ' + spec.key : ''}  `}</Text>
-            <Text bold color="claude">{usd(total)}</Text>
-            <Text dimColor>{`  priced from tokens · engine ledger this session ${usd(usage.cost?.usd ?? 0)}`}</Text>
+            <Text bold color={color('accent', theme)}>{usd(total)}</Text>
+            <Text {...dimProps(theme)}>{`  priced from tokens · engine ledger this session ${usd(usage.cost?.usd ?? 0)}`}</Text>
           </Text>
           <Text>{' '}</Text>
-          <Text dimColor>{'agent'.padEnd(16) + 'model'.padEnd(8) + 'in'.padStart(7) + 'out'.padStart(7) + 'cache'.padStart(7) + 'cost'.padStart(8)}</Text>
-          {agents.length === 0 && <Text dimColor>No model request on this spec yet.</Text>}
+          <Text {...dimProps(theme)}>{'agent'.padEnd(16) + 'model'.padEnd(8) + 'in'.padStart(7) + 'out'.padStart(7) + 'cache'.padStart(7) + 'cost'.padStart(8)}</Text>
+          {agents.length === 0 && <Text {...dimProps(theme)}>No model request on this spec yet.</Text>}
           {agents.map(([name, agent]) => (
             <Text key={'agent-' + name} wrap="truncate-end">
-              <Text color={name === 'main' ? 'claude' : undefined}>{name.slice(0, 15).padEnd(16)}</Text>
-              <Text dimColor>{shortModel(agent.model, prices).padEnd(8)}</Text>
+              <Text color={name === 'main' ? color('accent', theme) : undefined}>{name.slice(0, 15).padEnd(16)}</Text>
+              <Text {...dimProps(theme)}>{shortModel(agent.model, prices).padEnd(8)}</Text>
               {tokens(agent.input + agent.cacheRead + agent.cacheWrite).padStart(7) + tokens(agent.output).padStart(7) + pct(cacheRate(agent) * 100).padStart(7)}
               <Text bold>{usd(agent.weight).padStart(8)}</Text>
               {' '}
-              <Text color={name === 'main' ? 'claude' : 'suggestion'}>{bar(top ? agent.weight / top : 0, barWidth)}</Text>
+              <Text color={name === 'main' ? color('accent', theme) : color('accent', theme)}>{bar(top ? agent.weight / top : 0, barWidth)}</Text>
             </Text>
           ))}
           <Text>{' '}</Text>
           <Text>
             {'5-hour   '}
-            <Text color={levelColor(fiveHour?.percentUsed)}>{bar((fiveHour?.percentUsed ?? 0) / 100, barWidth) + ' ' + pct(fiveHour?.percentUsed)}</Text>
-            <Text dimColor>{fiveHour?.resetsAt ? '  resets ' + fiveHour.resetsAt.slice(11, 16) : ''}</Text>
+            <Text color={levelColor(fiveHour?.percentUsed, theme)}>{bar((fiveHour?.percentUsed ?? 0) / 100, barWidth) + ' ' + pct(fiveHour?.percentUsed)}</Text>
+            <Text {...dimProps(theme)}>{fiveHour?.resetsAt ? '  resets ' + fiveHour.resetsAt.slice(11, 16) : ''}</Text>
           </Text>
           <Text>
             {'7-day    '}
-            <Text color={levelColor(sevenDay?.percentUsed)}>{bar((sevenDay?.percentUsed ?? 0) / 100, barWidth) + ' ' + pct(sevenDay?.percentUsed)}</Text>
+            <Text color={levelColor(sevenDay?.percentUsed, theme)}>{bar((sevenDay?.percentUsed ?? 0) / 100, barWidth) + ' ' + pct(sevenDay?.percentUsed)}</Text>
           </Text>
           <Text>
             {'context  '}
-            <Text color={levelColor(usage.context.percent)}>{bar((usage.context.percent ?? 0) / 100, barWidth) + ' ' + pct(usage.context.percent)}</Text>
+            <Text color={levelColor(usage.context.percent, theme)}>{bar((usage.context.percent ?? 0) / 100, barWidth) + ' ' + pct(usage.context.percent)}</Text>
           </Text>
           <Text>{' '}</Text>
-          <Text dimColor wrap="truncate-end">
+          <Text {...dimProps(theme)} wrap="truncate-end">
             {history.length
               ? 'earlier: ' + history.slice(-4).map(item => `${item.spec.replace(/^\d{4}-\d{2}-\d{2}-/, '')} ${usd(item.usd)}`).join(' · ')
               : 'earlier: no spec yet'}
           </Text>
-          {Boolean(current.deciders?.decisions) && (
-            <Text dimColor>{`deciders: ${current.deciders!.decisions} decision(s) · ${usd(current.deciders!.cost_total ?? 0)}`}</Text>
-          )}
-          <Text dimColor>Priced with config/prices.json. Subscription plans pay in limits, not dollars.</Text>
+          <Text {...dimProps(theme)}>Priced with config/prices.json. Subscription plans pay in limits, not dollars.</Text>
         </Box>
       )
-    } else if (active === 'deciders') {
-      const deciders = current.deciders
-      const last = (deciders?.last ?? {}) as Record<string, unknown>
-      const items = (last.items ?? {}) as Record<string, unknown>
-      const votes = (last.votes ?? {}) as Record<string, unknown>
+    } else if (active === 'theme') {
+      const names = Object.keys(allThemes ?? {})
+      const fallback = theme?.name && names.includes(theme.name) ? theme.name : (names[0] ?? '')
+      const selected = names.includes(pickedTheme) ? pickedTheme : fallback
+      const move = (by: number) =>
+        update($, themeCursor, () => names[(names.indexOf(selected) + by + names.length) % names.length] ?? '')
+      const sample = bar(0.62, 10)
       body = (
         <Box flexDirection="column">
           <Text>
-            <Text bold>🧠 Deciders</Text>
-            <Text color={deciders?.enabled ? 'success' : 'subtle'}>{deciders?.enabled ? '  on' : '  off'}</Text>
-            <Text dimColor>{` · mode ${deciders?.mode ?? 'first'}`}</Text>
+            <Text bold>{'🎨 Theme  '}</Text>
+            <Text {...dimProps(theme)}>{theme?.chosen ? `using ${theme.name}` : 'none chosen · the engine colours show'}</Text>
           </Text>
-          <Text dimColor wrap="truncate-end">
-            {deciders?.mode === 'council' ? 'council: ' + (deciders?.council ?? []).join(', ') : 'order: ' + (deciders?.order ?? []).join(' → ')}
-          </Text>
-          <Text dimColor wrap="truncate-end">{'ready: ' + ((deciders?.ready ?? []).join(', ') || 'none. bin/craft-decide status says why')}</Text>
-          <Text>{' '}</Text>
-          {last.stage ? (
-            <Box flexDirection="column">
-              <Text wrap="truncate-end">
-                <Text bold>{'last: ' + String(last.stage)}</Text>
-                <Text dimColor>{' · ' + String(last.source ?? '')}</Text>
-              </Text>
-              {Object.entries(items).map(([name, value]) => (
-                <Text key={'item-' + name} wrap="truncate-end">{`  ${name.padEnd(18)} ${fit(Array.isArray(value) ? value.join(', ') : String(value), 21)}`}</Text>
-              ))}
-              {Object.entries(votes).map(([member, answer]) => (
-                <Text key={'vote-' + member} wrap="truncate-end">
-                  {'  ' + (deciders?.labels?.[member] ?? member).padEnd(18) + ' '}
-                  <Text dimColor>{fit(voteText(answer), 21)}</Text>
+          {names.length === 0 && <Text {...dimProps(theme)}>No themes found. Run bin/craft-statusline --themes-json to see why.</Text>}
+          {names.map(name => {
+            const palette = allThemes?.[name]?.palette ?? null
+            const isSelected = name === selected
+            return (
+              <Button key={'theme-' + name} plain onPress={() => (isSelected ? applyTheme($, name) : update($, themeCursor, () => name))}>
+                <Text wrap="truncate-end">
+                  <Text bold={isSelected}>{`${isSelected ? '▸' : ' '} ${theme?.chosen && theme.name === name ? '✓' : ' '} `}</Text>
+                  <Text bold color={palette?.accent}>{name.padEnd(12)}</Text>
+                  <Text color={palette?.ok}>{sample}</Text>
+                  <Text color={palette?.text}>{' 62% '}</Text>
+                  <Text color={palette?.ok}>{'✓ '}</Text>
+                  <Text color={palette?.warn}>{'◐ '}</Text>
+                  <Text color={palette?.bad}>{'✗ '}</Text>
+                  <Text color={palette?.dim}>{'dim'}</Text>
                 </Text>
-              ))}
-            </Box>
-          ) : (
-            <Text dimColor>No decision yet. /craft asks the deciders when they are on; /decide turns them on.</Text>
-          )}
+              </Button>
+            )
+          })}
           <Text>{' '}</Text>
-          <Text dimColor>Only the request text and changed paths leave the machine, never file contents.</Text>
-          <Box flexDirection="row" columnGap={2}>
-            <Button key="decider-mode" label={`mode → ${deciders?.mode === 'council' ? 'first' : 'council'}`} hotkey="m" plain onPress={() => toggleMode($)} />
-            <Button key="decider-ping" label="ping the chain" hotkey="p" plain dimColor onPress={() => pingDeciders($)} />
+          <Box flexDirection="row" columnGap={2} flexWrap="wrap">
+            {names.length > 1 && <Button key="theme-down" label="down" hotkey="j" plain dimColor onPress={() => move(1)} />}
+            {names.length > 1 && <Button key="theme-up" label="up" hotkey="k" plain dimColor onPress={() => move(-1)} />}
+            {selected && <Button key="theme-apply" label="apply" hotkey="a" plain onPress={() => applyTheme($, selected)} />}
           </Box>
+          <Text {...dimProps(theme)}>{`j k move the ▸ · a or Enter on the ▸ row applies it · the status line picks it up on its next refresh${theme?.source === 'env' ? ' · CRAFT_STATUSLINE_THEME is set and overrides the saved theme' : ''}`}</Text>
         </Box>
       )
     } else if (active === 'scenarios') {
       const block = current.scenarios
-      const shown = scenariosGlyph(block?.state)
+      const shown = scenariosGlyph(block?.state, theme)
       const rows = block?.by_criterion ?? []
       const pending = block?.state !== 'approved'
       const sha = block?.sha || '-'
@@ -998,10 +1033,10 @@ export const register: Register = (on, options) => {
       body = (
         <Box flexDirection="column">
           {confirmingScenarios === sha && pending && (
-            <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+            <Box flexDirection="column" borderStyle="round" borderColor={color('warn', theme)} paddingX={1}>
               <Text bold>Approve the scenarios?</Text>
-              <Text dimColor>{`${block?.count ?? 0} scenario(s) · ${rows.length} criteria · sha ${block?.sha ?? ''}`}</Text>
-              <Text dimColor>The test gate opens, and Claude may write test files.</Text>
+              <Text {...dimProps(theme)}>{`${block?.count ?? 0} scenario(s) · ${rows.length} criteria · sha ${block?.sha ?? ''}`}</Text>
+              <Text {...dimProps(theme)}>The test gate opens, and Claude may write test files.</Text>
               <Box flexDirection="row" columnGap={2}>
                 <Button key="scen-confirm" label="confirm" hotkey="y" variant="primary" onPress={() => approveScenarios($)} />
                 <Button key="scen-cancel" label="cancel" hotkey="n" plain dimColor onPress={() => update($, confirmScenarios, () => '')} />
@@ -1011,19 +1046,19 @@ export const register: Register = (on, options) => {
           <Text>
             <Text bold>{'🧪 Scenarios  '}</Text>
             <Text color={shown.color}>{`${shown.glyph} ${block?.state ?? 'none'}`}</Text>
-            <Text dimColor>{` · ${block?.count ?? 0} scenario(s)${block?.sha ? ' · sha ' + block.sha : ''}`}</Text>
+            <Text {...dimProps(theme)}>{` · ${block?.count ?? 0} scenario(s)${block?.sha ? ' · sha ' + block.sha : ''}`}</Text>
           </Text>
-          {block?.error && <Text color="error">{`scenarios.md could not be read: ${block.reason || 'unknown error'}`}</Text>}
-          {!block?.error && rows.length === 0 && <Text dimColor>No criteria yet. The spec needs acceptance criteria first.</Text>}
+          {block?.error && <Text color={color('bad', theme)}>{`scenarios.md could not be read: ${block.reason || 'unknown error'}`}</Text>}
+          {!block?.error && rows.length === 0 && <Text {...dimProps(theme)}>No criteria yet. The spec needs acceptance criteria first.</Text>}
           {!block?.error && rows.map(row => (
             <Box key={'scen-' + row.id} flexDirection="column" marginTop={1}>
               <Text wrap="truncate-end">
                 <Text bold>{row.id}</Text>
-                <Text dimColor>{'  ' + fit(criterionText.get(row.id) ?? '', row.id.length + 2)}</Text>
+                <Text {...dimProps(theme)}>{'  ' + fit(criterionText.get(row.id) ?? '', row.id.length + 2)}</Text>
               </Text>
               {row.lines.length === 0 && (
                 <Button key={`scen-${row.id}-0`} plain onPress={() => moveCursor($, order, `${row.id}:0`, 0)}>
-                  <Text color={selected === `${row.id}:0` ? 'claude' : undefined} dimColor={selected !== `${row.id}:0`}>
+                  <Text {...(selected === `${row.id}:0` ? { color: color('accent', theme) } : dimProps(theme))}>
                     {(selected === `${row.id}:0` ? '▸ ' : '  ') + '○ no scenario yet'}
                   </Text>
                 </Button>
@@ -1047,7 +1082,7 @@ export const register: Register = (on, options) => {
                 ) : (
                   <Button key={`scen-${row.id}-${index + 1}`} plain onPress={() => moveCursor($, order, id, 0)}>
                     <Text wrap="truncate-end">
-                      <Text color={isSelected ? 'claude' : undefined} bold={isSelected} dimColor={!isSelected}>
+                      <Text {...(isSelected ? { color: color('accent', theme) } : dimProps(theme))} bold={isSelected}>
                         {`${isSelected ? '▸' : ' '} ${String(index + 1).padStart(2)}  `}
                       </Text>
                       {fit(line, 6)}
@@ -1068,7 +1103,7 @@ export const register: Register = (on, options) => {
                 />
               )}
               {deleting?.id === row.id && (
-                <Box flexDirection="column" borderStyle="round" borderColor="warning" paddingX={1}>
+                <Box flexDirection="column" borderStyle="round" borderColor={color('warn', theme)} paddingX={1}>
                   <Text bold>{`Delete ${deleting.id} #${deleting.n}?`}</Text>
                   <Text wrap="wrap">{deleting.line}</Text>
                   <Box flexDirection="row" columnGap={2}>
@@ -1080,7 +1115,7 @@ export const register: Register = (on, options) => {
             </Box>
           ))}
           <Text>{' '}</Text>
-          {editing && <Text dimColor>Enter saves · an empty Enter closes the field</Text>}
+          {editing && <Text {...dimProps(theme)}>Enter saves · an empty Enter closes the field</Text>}
           <Box flexDirection="row" columnGap={2} flexWrap="wrap">
             {order.length > 1 && <Button key="scen-down" label="down" hotkey="j" plain dimColor onPress={() => moveCursor($, order, selected, 1)} />}
             {order.length > 1 && <Button key="scen-up" label="up" hotkey="k" plain dimColor onPress={() => moveCursor($, order, selected, -1)} />}
@@ -1108,11 +1143,11 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" rowGap={1}>
         {header}
         {staleReason && (
-          <Text color="warning" wrap="truncate-end">{`◐ Showing the last good state. ${staleReason} · r retries`}</Text>
+          <Text color={color('warn', theme)} wrap="truncate-end">{`◐ Showing the last good state. ${staleReason} · r retries`}</Text>
         )}
         {tabs}
         {body}
-        {message && <Text color="suggestion" wrap="wrap">{message}</Text>}
+        {message && <Text color={color('accent', theme)} wrap="wrap">{message}</Text>}
         <Box flexDirection="row" columnGap={2}>
           <Button key="board-refresh" label="refresh" hotkey="r" plain dimColor onPress={() => refresh($)} />
           {(widest > 0 || offset > 0) && (
@@ -1121,7 +1156,7 @@ export const register: Register = (on, options) => {
           {(widest > 0 || offset > 0) && (
             <Button key="board-right" label="▶" hotkey="l" plain dimColor onPress={() => update($, hscroll, value => Math.min(widest, value + SCROLL_STEP))} />
           )}
-          <Text dimColor>1–7 tabs · esc closes</Text>
+          <Text {...dimProps(theme)}>1–7 tabs · esc closes</Text>
         </Box>
       </Box>
     )

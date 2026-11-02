@@ -11,7 +11,7 @@ Usage:
     bin/craft-session status [--json]
     bin/craft-session record-finding --severity High --lens logic --where FILE:LINE --title "TEXT"
                                      [--state proposed|confirmed] [--confidence 0.8]
-    bin/craft-session finding ID --state confirmed|rejected|fixed [--note "TEXT"]
+    bin/craft-session finding ID --state confirmed|rejected|fixed  (Claude: fixed only) [--note "TEXT"]
     bin/craft-session record-review --lenses spec,style,logic --decision APPROVE|REQUEST_CHANGES|COMMENT
                                     [--reviewers reviewer,deep-reviewer] [--round N]
     bin/craft-session end
@@ -91,7 +91,7 @@ def command_start(argv):
         print("The spec gate is now shut for source and test files. To open it:")
         print("  1. bin/craft-spec new --route %s --title \"TITLE\", or run /spec." % route)
         print("  2. Present the spec and get the developer's approval.")
-        print("  3. bin/craft-approve")
+        print("  3. The developer runs bin/craft-approve.")
     return 0
 
 
@@ -252,13 +252,20 @@ def command_record_review(argv):
     cwd = argument(argv, "--cwd")
     lenses = [lens.strip() for lens in str(argument(argv, "--lenses", "") or "").split(",") if lens.strip()]
     decision = str(argument(argv, "--decision", "") or "").upper()
+    reviewers = [name.strip() for name in str(argument(argv, "--reviewers", "") or "").split(",") if name.strip()]
     if not lenses or decision not in DECISIONS:
         sys.stderr.write("record-review needs --lenses a,b and --decision %s\n" % "|".join(DECISIONS))
+        return 2
+    if not reviewers:
+        sys.stderr.write(
+            "record-review needs --reviewers reviewer[,deep-reviewer]: the reviewers you spawned for this round. "
+            "Gate B counts a round only when one of them was really spawned.\n"
+        )
         return 2
     record = {
         "lenses": lenses,
         "decision": decision,
-        "reviewers": [name.strip() for name in str(argument(argv, "--reviewers", "") or "").split(",") if name.strip()],
+        "reviewers": reviewers,
         "round": argument(argv, "--round"),
     }
     if not craft_state.add_review(record, cwd=cwd):

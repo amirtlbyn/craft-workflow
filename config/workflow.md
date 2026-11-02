@@ -27,7 +27,7 @@ Replace them with your own documents to retarget the whole workflow.
 | Engineering standards | `standards/technical_standards.ai.md` | Yes |
 | Developer English | `skills/asd-ste100/SKILL.md` | Yes |
 
-**Per stack (§9).** The four documents above are the Django stack's. Every other
+**Per stack (§8).** The four documents above are the Django stack's. Every other
 stack adds its own standard, named in its `stacks/<id>/stack.json`:
 `fastapi_standards.ai.md`, `go_standards.ai.md`, `java_standards.ai.md`,
 `node_standards.ai.md`, `php_standards.ai.md`. The frontend stacks add
@@ -36,6 +36,10 @@ stack adds its own standard, named in its `stacks/<id>/stack.json`:
 `nuxt` stacks. They are bot-maintainable until a team renames one to
 `.human.md`. `technical_standards` TS-1 to TS-5 apply to every stack that owns a
 database.
+
+**Layers.** The paths above are the plugin layer. `bin/craft-std` also reads the
+repository's `aidocs/` (project) and a selected profile directory, and the closest
+layer that holds a name wins (`bin/craft-std --where` shows them).
 
 **Read sections, not whole files.** `bin/craft-std --list` prints every section
 of every standard with its size and first sentence. Pull only the sections a
@@ -72,7 +76,7 @@ states the route and the reason, and proceeds. Say "use route X" to override.
 | Route | Use it for | Spec | Implementer | Review |
 |---|---|---|---|---|
 | **quick** | Typo, comment, rename, import, config value, one-line fix with a known cause | None | Main session, inline | None. Gate A tools only. Say "review it" to add the `style` lens |
-| **task** | One merge request. A scoped feature or bug fix with no design question | `spec.md` + `tasks.md` | Main session, inline | One `reviewer` pass. `deep-reviewer` too when the spec says `Risk: high` |
+| **task** | One merge request. A scoped feature or bug fix with no design question | `spec.md` + `tasks.md` | Main session, or `coder` with the session's Model when it differs from the main session's model | One `reviewer` pass. `deep-reviewer` too when the spec says `Risk: high` |
 | **project** | Multi-session work, cross-app change, anything needing a design | `spec.md` + `design.md` + `tasks.md` | `coder` per session, from the spec | The same, once per session |
 
 **Classification rules.** Any one of these forces **project**: a schema migration,
@@ -95,8 +99,17 @@ Everything else may be **quick**.
 **Two approvals on task and project.** The developer approves the spec first.
 That opens the gate for source files. Claude then drafts the test scenarios
 with `bin/craft-scenarios draft`, presents them, and stops. The developer
-approves them, and `bin/craft-approve --scenarios` records it. That opens the
-gate for test files. Claude writes no test before then.
+approves them with `bin/craft-approve --scenarios`. That opens the gate for
+test files. Claude writes no test before then.
+
+**Only the developer approves.** The developer runs `bin/craft-approve`, with
+`! "<plugin root>/bin/craft-approve"` in the prompt or with `a` on the board.
+Claude never runs `craft-approve`, never writes a file under `.claude/craft/`,
+and never turns the hooks off (`CRAFT_HOOKS`, `disableAllHooks`, `claude plugin
+disable`). The hooks deny all of these. While the spec gate is shut, the gate
+also denies Bash commands that write source or test files, and the Stop hook
+refuses to stop until a file that a Bash call changed is restored, with the
+command the hook names.
 
 **Never let quick touch:** money, authentication, authorization, migrations,
 concurrency, or an externally visible contract. Promote to task instead.
@@ -112,6 +125,14 @@ decides the review in §3, not the route.
 
 Reviewers cost money. One reviewer pass reads the diff once and applies every
 lens the diff earns. The lens files live in `skills/review-protocol/lenses/`.
+
+The floor comes from `bin/craft-spec lenses [--base REF] [--json]`. It lists the
+lenses the changed paths and added lines earn since the spec's start commit
+(committed, uncommitted, and untracked), each with the path or line that caused
+it, and every Risk: high spec adds `logic` and `security`. Route at least that floor. Add a lens when the diff earns one the floor
+cannot see. On `task` and `project`, the Stop hook refuses `done` until a review
+round is recorded for the spec by a reviewer that was really spawned, no Critical or High finding is confirmed or unadjudicated,
+and the recorded rounds cover the floor.
 
 | Reviewer | Model | Runs when | Lenses it applies |
 |---|---|---|---|
@@ -174,7 +195,8 @@ globs as the gate.
   test that names its ID (`bin/craft-spec trace` is green, or
   `trace --session N` for one project session), the checkpoint
   command ran through `bin/craft-check` and passed, and lint, import order, and
-  format pass.
+  format pass. The checkpoint must match exactly (whitespace aside), and it
+  expires when a file outside `.claude/` changes after it ran: run it again.
 - **Gate B — review green.** Every routed lens ran, no open Confirmed Critical or
   High finding, every lens checklist item answered.
 
@@ -217,7 +239,6 @@ own. The `craft` skill uses this table as its routing map.
 | Rewriting a long document for developers | `asd-ste100` |
 | Acting as a reviewer, or adjudicating findings | `review-protocol` |
 | A verification tool is missing | `toolchain` |
-| `/jev`, or a routing decision while Jev is on (§8) | `jev` |
 
 ---
 
@@ -253,28 +274,7 @@ forking the plugin.
 
 ---
 
-## 8. Jev — optional typed decisions
-
-Off by default. `/jev on` turns it on for one repository. Jev is TypeSafe's
-System One decision model, reached through OpenRouter's Decisions API. It
-answers the routing questions in `config/jev.json`: the route, the risk tier,
-the implementer model, the skills to load, and the review lenses. It does not
-call tools. Claude acts on its answers.
-
-Every answer is combined with a rules floor built from `config/paths.json` and a
-few keywords. Jev can raise a decision above the floor, never lower it. A choice
-below `confidence_threshold` counts as undecided, and Claude decides. When Jev
-fails, the floor and Claude's own routing apply. The developer's "use route X"
-wins over both.
-
-`/jev set endpoint <url>` and `/jev set model <id>` override the endpoint and
-model for one repository. `/jev approve on` is a second switch: it lets the
-`jev_approve` hook approve routine tool calls, within the lists in the
-`approve` block of `config/jev.json`. Only the developer turns it on.
-
----
-
-## 9. Stacks — one workflow, any backend language
+## 8. Stacks — one workflow, any backend language
 
 `bin/craft-stack` detects the stacks of the host repository from marker files
 and dependencies, at the root and two directory levels below it, so a monorepo

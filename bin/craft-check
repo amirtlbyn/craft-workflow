@@ -391,6 +391,8 @@ def main(argv):
         if junit_summary:
             summary = dict(summary, **junit_summary)
 
+    run_in = os.path.relpath(os.path.realpath(run_directory), os.path.realpath(str(root)))
+    run_in = "" if run_in == "." else run_in
     recorded = False
     if options["record"] and craft_state.is_active(str(root)):
         recorded = craft_state.record_check(
@@ -400,6 +402,8 @@ def main(argv):
             label=label,
             log=str(log_path.relative_to(root)) if log_path else None,
             summary=summary,
+            tree=craft_state.tree_fingerprint(str(root)),
+            run_in=run_in,
         )
 
     lines = output.rstrip("\n").splitlines()

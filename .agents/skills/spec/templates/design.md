@@ -12,8 +12,10 @@ Spec: spec.md · Key: {key}
 
 ## Decisions
 
-| Decision | Layer that owns it | Invariant it protects | Alternative rejected |
-|---|---|---|---|
+<!-- Ask every open design question with AskUserQuestion before you fill this.
+     Write the developer's answer as `<answer> (developer, <date>)`. -->
+| Decision | Layer that owns it | Invariant it protects | Alternative rejected | Developer answer |
+|---|---|---|---|---|
 
 ## Data and migrations
 

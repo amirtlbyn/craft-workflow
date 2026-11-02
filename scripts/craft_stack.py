@@ -9,7 +9,7 @@ which concurrency skill it has.
 
 This module finds the packs that match a repository, and answers questions
 about them. bin/craft-stack is its command line. bin/craft-spec trace,
-bin/craft-check, bin/craft-toolchain, bin/craft-jev, bin/craft-ui-state and the
+bin/craft-check, bin/craft-toolchain, bin/craft-ui-state and the
 SessionStart hook read it.
 
 Detection looks at the repository root and at directories up to two levels

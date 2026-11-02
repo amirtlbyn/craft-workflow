@@ -15,8 +15,6 @@ Fails open: any exception prints nothing and exits 0. It never blocks a session.
 Kill switch: CRAFT_HOOKS=off
 """
 
-import json
-import os
 import pathlib
 import sys
 
@@ -25,18 +23,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import craft_state  # noqa: E402
 
 MAX_TASK_CHARS = 140
-
-
-def jev_enabled(cwd):
-    """Return True when the optional Jev layer is on. Never raises."""
-    try:
-        override = str(os.environ.get("CRAFT_JEV", "")).strip().lower()
-        if override in ("on", "off"):
-            return override == "on"
-        data = json.loads(craft_state.state_path("jev.json", cwd).read_text(encoding="utf-8"))
-        return bool(data.get("enabled"))
-    except Exception:
-        return False
 
 
 def context_lines(payload):
@@ -103,8 +89,6 @@ def context_lines(payload):
                 names, concurrency.get("model", "?"), concurrency.get("verdict", "?")))
         except Exception:
             pass
-        if jev_enabled(cwd):
-            lines.append("  deciders   on · routing decisions come from bin/craft-jev decide (bin/craft-decide status)")
         lines.append(
             "Resume from the spec directory. Do not re-explore the repository. "
             "Details: %s status" % (craft_state.PLUGIN_ROOT / "bin" / "craft-spec")

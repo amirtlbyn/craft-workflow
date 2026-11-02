@@ -27,7 +27,8 @@ Options:
 
 Exit codes:
     0   the approval was recorded, or --list printed
-    1   the approval could not be written, or --scenarios refused
+    1   the approval could not be written, an open question has no decision, or
+        --scenarios refused
     2   the arguments are wrong, or there is no spec to approve
 """
 
@@ -76,7 +77,7 @@ def approve_scenarios(directory, note, cwd):
     if state == "none" and not detail["sha256"]:
         sys.stderr.write("There is no scenarios.md. Run: bin/craft-scenarios draft\n")
         return 1
-    if not craft_state.criterion_ids((directory / "spec.md").read_text(encoding="utf-8")):
+    if not craft_state.criterion_ids((directory / "spec.md").read_text(encoding="utf-8", errors="replace")):
         sys.stderr.write("Refused. spec.md has no criterion ID in its Acceptance criteria table.\n")
         return 1
     if detail["missing"]:
@@ -150,6 +151,19 @@ def main(argv):
 
     if "--scenarios" in argv:
         return approve_scenarios(directory, argument(argv, "--note", "") or "", cwd)
+
+    try:
+        spec_text = (directory / "spec.md").read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        sys.stderr.write("Could not read %s\n" % (directory / "spec.md"))
+        return 1
+    open_rows = craft_state.unanswered_questions(spec_text)
+    if open_rows:
+        sys.stderr.write("Refused. These open questions have no developer decision:\n")
+        for question, decision in open_rows:
+            sys.stderr.write("  %s%s\n" % (question, (" [%s]" % decision) if decision else ""))
+        sys.stderr.write("Ask the developer each one, record the answer, then approve.\n")
+        return 1
 
     digest = craft_state.file_digest(directory / "spec.md")
     if not digest:

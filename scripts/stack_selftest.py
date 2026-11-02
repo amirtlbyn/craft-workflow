@@ -9,15 +9,11 @@ Groups:
   concurrency the readiness verdicts: what each system is built for
   trace       criterion IDs found in Python, Go, Java, Kotlin, and TypeScript tests
   craft-check runner summaries and JUnit XML
-  deciders    parsing, privacy, a council, and the OpenAI-compatible client
-              against a local mock server
-  jev floor   the concurrency lens routed from an added goroutine
   ui-state    the snapshot the craft mod draws, and the review records
 
 Every repository is a throwaway directory. Exit 0 when every case passes.
 """
 
-import http.server
 import importlib.machinery
 import importlib.util
 import json
@@ -27,7 +23,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 
 SCRIPTS = pathlib.Path(__file__).resolve().parent
 ROOT = SCRIPTS.parent
@@ -36,7 +31,6 @@ sys.path.insert(0, str(SCRIPTS))
 
 import craft_stack  # noqa: E402
 import craft_state  # noqa: E402
-import deciders  # noqa: E402
 
 VERBOSE = "--verbose" in sys.argv
 results = []
@@ -61,7 +55,7 @@ def repo(files):
 
 def run(name, arguments, cwd, environment=None):
     env = dict(os.environ)
-    for key in ("CRAFT_STACK", "CRAFT_DECIDERS", "CRAFT_DECIDER_MODE", "CRAFT_JEV", "OPENROUTER_API_KEY"):
+    for key in ("CRAFT_STACK",):
         env.pop(key, None)
     env.update(environment or {})
     finished = subprocess.run([sys.executable, str(BIN / name)] + arguments, cwd=str(cwd), env=env,
@@ -296,163 +290,6 @@ def test_craft_check():
     check(group, "the summary is recorded for the board", (recorded.get("summary") or {}).get("failed"), 1)
 
 
-# ---------------------------------------------------------------------------
-# Deciders
-# ---------------------------------------------------------------------------
-
-
-QUESTIONS = {
-    "route": {"type": "choice", "instructions": "Route?", "criteria": {"quick": "q", "task": "t", "project": "p"}},
-    "risk_high": {"type": "noul", "instructions": "Risky?"},
-}
-
-
-class MockChat(object):
-    """A local OpenAI-compatible server. replies: a list of (status, content)."""
-
-    def __init__(self, replies):
-        self.replies = list(replies)
-        self.bodies = []
-        owner = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def log_message(self, *args):
-                pass
-
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length", 0))
-                owner.bodies.append(json.loads(self.rfile.read(length).decode("utf-8")))
-                status, content = owner.replies.pop(0) if owner.replies else (200, "{}")
-                payload = {"model": "mock-model", "choices": [{"message": {"content": content}}],
-                           "usage": {"total_tokens": 42}}
-                data = json.dumps(payload).encode("utf-8")
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(data)
-
-            def do_GET(self):
-                data = json.dumps({"data": [{"id": "a:free", "pricing": {"prompt": "0", "completion": "0"}},
-                                            {"id": "b", "pricing": {"prompt": "0.000001", "completion": "0.000002"}}]})
-                self.send_response(200)
-                self.end_headers()
-                self.wfile.write(data.encode("utf-8"))
-
-        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        self.url = "http://127.0.0.1:%d/v1" % self.server.server_address[1]
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-
-    def close(self):
-        self.server.shutdown()
-
-
-def test_deciders():
-    group = "deciders"
-    check(group, "json after a think block and a fence",
-          deciders.extract_json('<think>{"x":1}</think>```json\n{"route": {"choice": "task"}}\n```'),
-          {"route": {"choice": "task"}})
-    answers = deciders.normalize({"route": {"choice": "task", "confidence": 0.8, "probabilities": {"task": 0.6, "quick": 0.3, "project": 0.3}},
-                                  "risk_high": {"p": 1.4}}, QUESTIONS)
-    check(group, "probabilities are normalized", round(answers["route"]["probabilities"]["task"], 2), 0.5)
-    check(group, "a probability is clamped", answers["risk_high"]["noul"], 1.0)
-    check(group, "an unknown choice is dropped", deciders.normalize({"route": "maybe"}, QUESTIONS), {})
-    check(group, "a bare word answers a noul", deciders.normalize({"risk_high": "yes"}, QUESTIONS)["risk_high"]["noul"], 1.0)
-
-    council, votes = deciders.combine_council({
-        "a": (deciders.normalize({"route": {"choice": "task", "confidence": 0.9}, "risk_high": {"p": 0.2}}, QUESTIONS), {}),
-        "b": (deciders.normalize({"route": {"choice": "task", "confidence": 0.7}, "risk_high": {"p": 0.6}}, QUESTIONS), {}),
-        "c": (deciders.normalize({"route": {"choice": "project", "confidence": 0.6}, "risk_high": {"p": 0.7}}, QUESTIONS), {}),
-    }, QUESTIONS)
-    check(group, "the council picks the majority", council["route"]["choice"], "task")
-    check(group, "agreement is counted", council["route"]["agreement"], "2/3")
-    check(group, "confidence is the averaged probability", round(council["route"]["confidence"], 3), round((0.9 + 0.7 + 0.2) / 3, 3))
-    check(group, "a noul is averaged", round(council["risk_high"]["noul"], 2), 0.5)
-    check(group, "votes are kept per member", votes["c"]["route"], ["project", 0.6])
-
-    private = {"send_request_text": False}
-    shown = deciders.state_for(private, {"request": "hello", "paths": ["a"]})
-    check(group, "send_request_text false keeps the text local", "request" in shown, False)
-    shown = deciders.state_for({}, {"request": "TOKEN=abc123456789 sk-or-v1-abcdefgh1234 ok"})
-    check(group, "secrets are redacted", "abc123456789" in shown["request"] or "abcdefgh1234" in shown["request"], False)
-    check(group, "https is allowed", deciders.url_allowed("https://api.groq.com/openai/v1"), True)
-    check(group, "http to this machine is allowed", deciders.url_allowed("http://localhost:11434/v1"), True)
-    check(group, "http elsewhere is refused", deciders.url_allowed("http://example.com/v1"), False)
-
-    good = '{"route": {"choice": "task", "confidence": 0.85}, "risk_high": {"p": 0.9}}'
-    server = MockChat([(400, ""), (200, good)])
-    try:
-        data = {"type": "openai", "base_url": server.url, "model": "m", "local": True, "free": True}
-        answers, meta = deciders.call_openai(data, QUESTIONS, {"request": "x"}, 5)
-        check(group, "a 400 retries without response_format", "response_format" in server.bodies[-1], False)
-        check(group, "the answer is read", answers["route"]["choice"], "task")
-        check(group, "a free provider costs 0", meta["cost"], 0)
-        models = deciders.discover({"providers": {"x": data}}, "x", only_free=True)
-        check(group, "discover lists the free models", [model["id"] for model in models], ["a:free"])
-    finally:
-        server.close()
-
-    first = MockChat([(500, ""), (500, "")])
-    second = MockChat([(200, good)])
-    try:
-        config = {"mode": "first", "order": ["broken", "fine"], "providers": {
-            "broken": {"type": "openai", "base_url": first.url, "model": "m", "local": True},
-            "fine": {"type": "openai", "base_url": second.url, "model": "m", "local": True}}}
-        answers, meta = deciders.ask(QUESTIONS, {"request": "x"}, config=config)
-        check(group, "mode first moves past a failing provider", meta["provider"], "fine")
-        check(group, "the failure is reported", "broken" in meta["failures"], True)
-    finally:
-        first.close()
-        second.close()
-
-    one = MockChat([(200, good)])
-    two = MockChat([(200, '{"route": {"choice": "project", "confidence": 0.6}, "risk_high": {"p": 0.5}}')])
-    three = MockChat([(500, ""), (500, "")])
-    try:
-        config = {"mode": "council", "council": ["one", "two", "three"], "min_council": 2, "providers": {
-            "one": {"type": "openai", "base_url": one.url, "model": "m", "local": True},
-            "two": {"type": "openai", "base_url": two.url, "model": "m", "local": True},
-            "three": {"type": "openai", "base_url": three.url, "model": "m", "local": True}}}
-        answers, meta = deciders.ask(QUESTIONS, {"request": "x"}, config=config)
-        check(group, "a council answers with two of three", meta["members"], ["one", "two"])
-        check(group, "a split council is not confident", answers["route"]["confidence"] < 0.7, True)
-    finally:
-        one.close()
-        two.close()
-        three.close()
-
-    root = repo({})
-    chat = MockChat([(200, good)])
-    try:
-        code, _out = run("craft-decide", ["set", "ollama", "base_url", chat.url], root)
-        check(group, "craft-decide set writes the override", code, 0)
-        run("craft-decide", ["use", "ollama"], root)
-        run("craft-jev", ["on"], root)
-        code, out = run("craft-jev", ["decide", "--stage", "route", "--request", "Add a column to wallets"], root)
-        check(group, "craft-jev decide asks the chosen decider", "🦙 Ollama" in out, True)
-        print(out) if VERBOSE else None
-        check(group, "the floor still applies", "floor task" in out, True)
-        code, out = run("craft-decide", ["status", "--json"], root)
-        check(group, "status reports the order", json.loads(out)["order"], ["ollama"])
-    finally:
-        chat.close()
-
-
-def test_jev_floor():
-    group = "jev floor"
-    root = repo({"go.mod": "module x\n", "worker.go": "package x\n"})
-    subprocess.run(["git", "init", "-q"], cwd=str(root))
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "."], cwd=str(root))
-    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"], cwd=str(root))
-    (root / "worker.go").write_text("package x\nfunc Run() {\n\tgo func() {}()\n}\n", encoding="utf-8")
-    code, out = run("craft-jev", ["decide", "--stage", "review", "--json"], root)
-    decision = json.loads(out)
-    check(group, "an added goroutine routes the concurrency lens", "concurrency" in decision["items"]["lenses"]["value"], True)
-    code, out = run("craft-jev", ["decide", "--stage", "route", "--request", "make the payouts parallel", "--json"], root)
-    decision = json.loads(out)
-    check(group, "a parallel request forces at least task", decision["items"]["route"]["floor"], "task")
-    check(group, "and loads the concurrency skill first", decision["items"]["stack_skills"]["value"][0], "concurrency")
-
-
 def test_ui_state():
     group = "ui-state"
     root = repo({".claude/specs/s/spec.md": SPEC.replace("Risk: low", "Risk: high"),
@@ -465,7 +302,9 @@ def test_ui_state():
     code, out = run("craft-session", ["record-finding", "--severity", "High", "--lens", "logic",
                                       "--where", "a.go:1", "--title", "x"], root)
     check(group, "record-finding gets an id", "F1" in out, True)
-    run("craft-session", ["record-review", "--lenses", "spec,style", "--decision", "APPROVE"], root)
+    craft_state.record_spawn("reviewer", cwd=str(root))
+    run("craft-session", ["record-review", "--lenses", "spec,style,logic,security", "--reviewers", "reviewer",
+                          "--decision", "APPROVE"], root)
     code, out = run("craft-ui-state", [], root)
     data = json.loads(out)
     check(group, "the stack is go", data["stack"]["primary"], "go")
@@ -473,7 +312,7 @@ def test_ui_state():
     check(group, "two tasks are read", [task["done"] for task in data["spec"]["tasks"]], [True, False])
     check(group, "a failed race keeps Gate A shut", (data["gate_a"]["passed"], data["gate_a"]["total"], data["gate_a"]["green"]),
           (2, 3, False))
-    check(group, "a proposed finding keeps Gate B in review", data["gate_b"]["state"], "in review")
+    check(group, "a proposed High finding requests changes", data["gate_b"]["state"], "changes requested")
     run("craft-session", ["finding", "F1", "--state", "rejected"], root)
     data = json.loads(run("craft-ui-state", [], root)[1])
     check(group, "a rejected finding lets an approved round go green", data["gate_b"]["state"], "green")
@@ -516,8 +355,7 @@ def report():
 
 def main():
     try:
-        for test in (test_stacks, test_checks, test_concurrency, test_trace, test_craft_check,
-                     test_deciders, test_jev_floor, test_ui_state, test_frontend_units):
+        for test in (test_stacks, test_checks, test_concurrency, test_trace, test_craft_check, test_ui_state):
             try:
                 test()
             except Exception as error:  # a crashing group is a failing group

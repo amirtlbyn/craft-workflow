@@ -9,9 +9,24 @@ Usage:
     bin/craft-std --list                       every section of every standard, one line each
     bin/craft-std <file> --list                every section of one standard
     bin/craft-std <file> <section> [<section> ...]
+    bin/craft-std --where                      the three layers, the profile, and why
+    bin/craft-std init                         copy the stack's standards into aidocs/
 
-<file> is any unique prefix of a file name in standards/, for example
+<file> is any unique prefix of a standard's name, for example
 python_code_style, django, implementation, or technical.
+
+Standards come from three layers. The closest layer that holds a name wins, and
+its file replaces the same-named file below it entirely:
+    project   <repo root>/aidocs/            (repo root: git top level, else the working directory)
+    profile   <config>/craft-workflow/profiles/<name>/
+    plugin    <plugin root>/standards/
+<config> is $XDG_CONFIG_HOME when absolute, else ~/.config. The profile is named by
+aidocs/craft.json {"profile": "<name>"}, else by the first matching rule of
+<config>/craft-workflow/profiles.json, where a rule is {"remote": <glob>, "profile":
+<name>} or {"path": <glob>, "profile": <name>} and matches the origin URL or the
+absolute repo root. A profile name must match [a-z0-9][a-z0-9_-]*. A problem with the
+profile prints one warning on stderr and skips the profile layer. In one layer,
+.human.md beats .ai.md, .legacy.md, and .md. README.md is never a standard.
 
 <section> matches a heading, case-insensitively: an exact heading wins, then a
 heading that starts with it, then a heading that contains it. A section runs
@@ -23,11 +38,16 @@ Exit codes:
     1   at least one section was not found. The headings of that file are printed
     2   the arguments are wrong, or the file is not unique or not found
 
-Standard library only. It reads standards/ and writes nothing.
+Standard library only. It reads the three layers and writes nothing, except `init`,
+which only creates new files in aidocs/.
 """
 
+import fnmatch
+import json
+import os
 import pathlib
 import re
+import subprocess
 import sys
 
 PLUGIN_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -36,44 +56,224 @@ SKIP_FILES = ("README.md",)
 HEADING = re.compile(r"^(#{1,4})\s+(.+?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
 GIST_LIMIT = 110
-
-
-def standard_files():
-    """Return the standards documents, sorted by name."""
-    if not STANDARDS_DIR.is_dir():
-        return []
-    return sorted(
-        path
-        for path in STANDARDS_DIR.glob("*.md")
-        if path.name not in SKIP_FILES
-    )
+SUFFIXES = (".human.md", ".ai.md", ".legacy.md", ".md")
+PROFILE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 def short_name(path):
     """Return the file name without its ownership and .md suffixes."""
     name = path.name
-    for suffix in (".human.md", ".ai.md", ".legacy.md", ".md"):
+    for suffix in SUFFIXES:
         if name.endswith(suffix):
             return name[: -len(suffix)]
     return name
 
 
-def resolve_file(prefix):
-    """Return (path, None) for a unique prefix, or (None, message)."""
+def repo_root(cwd):
+    """Return the git top level of cwd, or cwd outside git."""
+    try:
+        done = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(cwd), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return pathlib.Path(cwd)
+    top = done.stdout.strip()
+    return pathlib.Path(top) if done.returncode == 0 and top else pathlib.Path(cwd)
+
+
+def config_dir(env):
+    """Return the config directory: an absolute XDG_CONFIG_HOME, else ~/.config, else None."""
+    xdg = env.get("XDG_CONFIG_HOME") or ""
+    home = env.get("HOME")
+    base = xdg if os.path.isabs(xdg) else (home and os.path.join(home, ".config"))
+    return pathlib.Path(base) / "craft-workflow" if base else None
+
+
+def read_json(path, warnings):
+    """Return the parsed JSON object of path, or None when absent or broken (broken warns)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        warnings.append("cannot read %s: %s" % (path, error))
+        return None
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError) as error:
+        warnings.append("%s does not parse: %s" % (path, error))
+        return None
+    if not isinstance(data, dict):
+        warnings.append("%s is not a JSON object" % path)
+        return None
+    return data
+
+
+def origin_url(root):
+    """Return the origin remote URL of the repository at root, or an empty string."""
+    try:
+        done = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            cwd=str(root), capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def match_rule(rules, root, warnings, profiles_file):
+    """Return (profile, source) of the first matching rule, or (None, "none"). Bad rules warn."""
+    if not isinstance(rules, list):
+        warnings.append("%s: \"rules\" is not a list" % profiles_file)
+        return None, "none"
+    url = None
+    for number, rule in enumerate(rules, 1):
+        keys = [key for key in ("remote", "path") if isinstance(rule, dict) and key in rule]
+        valid = (
+            len(keys) == 1
+            and isinstance(rule[keys[0]], str)
+            and isinstance(rule.get("profile"), str)
+        )
+        if not valid:
+            warnings.append(
+                "%s: rule %d needs one string \"remote\" or \"path\" glob and a string \"profile\"; skipped"
+                % (profiles_file, number)
+            )
+            continue
+        if keys[0] == "remote":
+            url = origin_url(root) if url is None else url
+            subject = url
+        else:
+            subject = str(root)
+        if subject and fnmatch.fnmatchcase(subject, rule[keys[0]]):
+            return rule["profile"], "%s rule %d (%s %s)" % (
+                profiles_file.name, number, keys[0], rule[keys[0]],
+            )
+    return None, "none"
+
+
+def select_profile(root, config, warnings):
+    """Return (name, source): aidocs/craft.json first, then the first matching profiles.json rule."""
+    pinned = read_json(root / "aidocs" / "craft.json", warnings)
+    if pinned is not None and pinned.get("profile") is not None:
+        return pinned["profile"], "aidocs/craft.json"
+    if config is None:
+        return None, "none"
+    profiles_file = config / "profiles.json"
+    data = read_json(profiles_file, warnings)
+    if data is None:
+        return None, "none"
+    return match_rule(data.get("rules", []), root, warnings, profiles_file)
+
+
+def build_layers(cwd=None, env=None):
+    """Return the layers of cwd's repository, closest first, with the profile choice and warnings.
+
+    Result: {"root", "profile", "source", "warnings", "layers"}. Each layer is
+    {"kind", "label", "dir", "exists"}; "dir" is None for an unselected profile.
+    """
+    cwd = pathlib.Path(cwd or os.getcwd())
+    env = os.environ if env is None else env
+    root = repo_root(cwd)
+    config = config_dir(env)
+    warnings = []
+    name, source = select_profile(root, config, warnings)
+    profile_dir = None
+    if name is not None and not (isinstance(name, str) and PROFILE_NAME.fullmatch(name)):
+        warnings.append("profile name %r (from %s) is not allowed; profile layer skipped" % (name, source))
+    elif name is not None:
+        profile_dir = config / "profiles" / name if config else None
+        if profile_dir is None or not profile_dir.is_dir():
+            warnings.append("profile %r (from %s) has no directory; profile layer skipped" % (name, source))
+            profile_dir = None
+    selected = profile_dir is not None
+    name = name if selected else None
+    layers = [
+        {"kind": "project", "label": "project", "dir": root / "aidocs"},
+        {"kind": "profile", "label": "profile %s" % name if selected else "profile",
+         "dir": profile_dir if selected else None},
+        {"kind": "plugin", "label": "plugin", "dir": STANDARDS_DIR},
+    ]
+    for layer in layers:
+        layer["exists"] = layer["dir"] is not None and layer["dir"].is_dir()
+    return {
+        "root": root, "profile": name, "source": source if selected else "none",
+        "warnings": warnings, "layers": layers,
+    }
+
+
+def layer_files(directory):
+    """Return {name: path} of the top-level standards in directory; .human.md beats .ai.md beats .legacy.md beats .md."""
+    if directory is None or not directory.is_dir():
+        return {}
+    found = {}
+    base = directory.resolve()
+    for path in sorted(directory.glob("*.md")):
+        if path.name in SKIP_FILES or not path.is_file():
+            continue
+        if base not in path.resolve().parents:
+            continue
+        name = short_name(path)
+        rank = [suffix for suffix in SUFFIXES if path.name.endswith(suffix)][0]
+        old = found.get(name)
+        if old is None or SUFFIXES.index(rank) < SUFFIXES.index(
+            [suffix for suffix in SUFFIXES if old.name.endswith(suffix)][0]
+        ):
+            found[name] = path
+    return found
+
+
+def merged_standards(info, kinds=("project", "profile", "plugin")):
+    """Return a name-sorted list of (name, path, layer label); the closest layer wins."""
+    chosen = {}
+    for layer in info["layers"]:
+        if layer["kind"] not in kinds:
+            continue
+        for name, path in layer_files(layer["dir"]).items():
+            chosen.setdefault(name, (path, layer["label"]))
+    return [(name, path, label) for name, (path, label) in sorted(chosen.items())]
+
+
+def warn_all(info):
+    """Print each warning of info once on stderr."""
+    for warning in info["warnings"]:
+        sys.stderr.write("craft-std: warning: %s\n" % warning)
+
+
+def standard_files():
+    """Return the standards documents, closest layer first per name, sorted by name."""
+    return [path for _name, path, _label in merged_standards(build_layers())]
+
+
+def display_path(path, root):
+    """Return path relative to the plugin root, else to the repo root, else absolute."""
+    for base in (PLUGIN_ROOT, root):
+        try:
+            return path.relative_to(base)
+        except ValueError:
+            continue
+    return path
+
+
+def resolve_entry(prefix, entries):
+    """Return ((name, path, label), None) for a unique prefix in entries, or (None, message)."""
     wanted = prefix.lower().strip()
-    files = standard_files()
-    exact = [path for path in files if short_name(path).lower() == wanted]
+    exact = [entry for entry in entries if entry[0].lower() == wanted]
     if exact:
         return exact[0], None
-    matches = [path for path in files if path.name.lower().startswith(wanted)]
+    suffixed = [entry for entry in entries if entry[0].lower() == wanted + "_standards"]
+    if suffixed:
+        return suffixed[0], None
+    matches = [entry for entry in entries if entry[1].name.lower().startswith(wanted)]
     if len(matches) == 1:
         return matches[0], None
-    names = ", ".join(short_name(path) for path in files) or "(none)"
+    names = ", ".join(entry[0] for entry in entries) or "(none)"
     if not matches:
         return None, "No standard matches %r. Known: %s" % (prefix, names)
     return None, "%r matches several standards: %s" % (
         prefix,
-        ", ".join(short_name(path) for path in matches),
+        ", ".join(entry[0] for entry in matches),
     )
 
 
@@ -159,11 +359,11 @@ def find_section(sections, query):
     return None
 
 
-def print_listing(path, sections, show_file=True):
+def print_listing(path, sections, show_file=True, label="plugin"):
     """Print one line per section, indented by level."""
     if show_file:
         size_kb = path.stat().st_size / 1000.0
-        print("%s  (%s, %.1f KB)" % (short_name(path), path.name, size_kb))
+        print("%s  (%s, %.1f KB, %s)" % (short_name(path), path.name, size_kb, label))
     for section in sections:
         if section["level"] < 2:
             continue
@@ -173,35 +373,90 @@ def print_listing(path, sections, show_file=True):
         print("%s%s  [%d B]%s" % (indent, section["title"], size, gist))
 
 
+def print_where(info):
+    """Print the layer directories, the selected profile, and why."""
+    print("repo root  %s" % info["root"])
+    for layer in info["layers"]:
+        if layer["dir"] is None:
+            print("%-8s  not selected" % layer["kind"])
+            continue
+        print("%-8s  %s  (%s)" % (layer["kind"], layer["dir"], "exists" if layer["exists"] else "missing"))
+    print("profile: %s" % (info["profile"] or "none"))
+    print("source: %s" % info["source"])
+
+
+def run_init(info):
+    """Copy the stack's standards from profile and plugin into aidocs/. Never overwrite."""
+    sys.path.insert(0, str(PLUGIN_ROOT / "scripts"))
+    import craft_stack  # noqa: E402
+
+    held = set(layer_files(info["layers"][0]["dir"]))
+    lower = merged_standards(info, kinds=("profile", "plugin"))
+    wanted = []
+    for stack in craft_stack.detect(info["root"]):
+        for prefix in craft_stack.pack(stack["id"]).get("standards") or []:
+            if prefix not in wanted:
+                wanted.append(prefix)
+    if not wanted:
+        print("no stack standards were found: no stack detected in %s" % info["root"])
+        return 0
+    target = info["layers"][0]["dir"]
+    written = set()
+    for prefix in wanted:
+        entry, problem = resolve_entry(prefix, lower)
+        if entry is None:
+            print("skipped  %s  (%s)" % (prefix, problem))
+            continue
+        name, path, label = entry
+        if name in held or name in written:
+            print("skipped  %s  (project layer already holds it)" % name)
+            continue
+        target.mkdir(parents=True, exist_ok=True)
+        with open(str(target / (name + ".ai.md")), "xb") as handle:
+            handle.write(path.read_bytes())
+        written.add(name)
+        print("wrote    %s  (from %s)" % (display_path(target / (name + ".ai.md"), info["root"]), label))
+    return 0
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__.strip())
         return 0 if argv else 2
 
+    info = build_layers()
+    warn_all(info)
+    if argv[0] == "--where":
+        print_where(info)
+        return 0
+    if argv[0] == "init":
+        return run_init(info)
+    entries = merged_standards(info)
+
     if argv[0] == "--list":
-        files = standard_files()
-        if not files:
+        if not entries:
             sys.stderr.write("No standards found in %s\n" % STANDARDS_DIR)
             return 2
-        for number, path in enumerate(files):
+        for number, (_name, path, label) in enumerate(entries):
             if number:
                 print("")
-            print_listing(path, parse_sections(path.read_text(encoding="utf-8")))
+            print_listing(path, parse_sections(path.read_text(encoding="utf-8")), label=label)
         return 0
 
-    path, problem = resolve_file(argv[0])
-    if path is None:
+    entry, problem = resolve_entry(argv[0], entries)
+    if entry is None:
         sys.stderr.write(problem + "\n")
         return 2
+    _name, path, label = entry
     sections = parse_sections(path.read_text(encoding="utf-8"))
     queries = argv[1:]
     if not queries or queries == ["--list"]:
-        print_listing(path, sections)
+        print_listing(path, sections, label=label)
         return 0
 
     missing = []
     printed = set()
-    relative = path.relative_to(PLUGIN_ROOT)
+    relative = display_path(path, info["root"])
     for query in queries:
         section = find_section(sections, query)
         if section is None:
