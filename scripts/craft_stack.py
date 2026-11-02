@@ -54,7 +54,7 @@ SKIP_DIRECTORIES = {
     ".git", ".claude", ".hg", ".svn", ".tox", ".venv", "venv", "env", ".env",
     "node_modules", "__pycache__", "site-packages", "build", "dist", "target",
     "vendor", ".gradle", ".idea", ".vscode", ".mypy_cache", ".pytest_cache",
-    ".ruff_cache", ".next", ".nuxt", "coverage", "out", "bin", "obj",
+    ".ruff_cache", ".next", ".nuxt", ".output", "coverage", "out", "bin", "obj",
 }
 
 _packs_cache = None
@@ -309,8 +309,10 @@ def test_spec(cwd=None, found=None):
 def skills_for(cwd=None, paths=None, found=None, with_concurrency=True):
     """Return the skills the stacks of paths need, primary first, without duplicates.
 
-    With no paths, every detected stack counts. The concurrency skill of a
-    stack is added only when that stack's concurrency report says it is ready.
+    With no paths, every detected stack counts. A skill is returned only when
+    `skills/<name>/SKILL.md` exists in the plugin, so a pack that names a
+    missing skill does not dangle. The concurrency skill of a stack is added
+    only when that stack's concurrency report says it is ready.
     """
     found = detect(cwd) if found is None else found
     if paths:
@@ -325,8 +327,11 @@ def skills_for(cwd=None, paths=None, found=None, with_concurrency=True):
     for owner in owners:
         data = pack(owner["id"])
         for name in data.get("skills") or []:
-            if name not in skills:
-                skills.append(name)
+            if name in skills:
+                continue
+            if not (PLUGIN_ROOT / "skills" / str(name) / "SKILL.md").is_file():
+                continue
+            skills.append(name)
         if with_concurrency:
             report = concurrency(cwd, owner)
             skill = report.get("skill")
@@ -438,6 +443,22 @@ def lens_addendum(lens, stack_id):
                 inside = heading.group(1).strip().lower() == lens.lower()
                 continue
             if inside:
+                lines.append(line)
+        if lines:
+            return "\n".join(lines).strip()
+        # Fall back to a keyword match: a lens named "ssr" resolves the
+        # "## SSR Safety Lens" section (php packs name headings by lens id;
+        # frontend packs use prose headings).
+        needle = lens.lower()
+        for line in text.splitlines():
+            heading = re.match(r"^##\s+(.+?)\s*$", line)
+            if heading and needle in heading.group(1).strip().lower():
+                inside = True
+                continue
+            if inside:
+                if heading:
+                    inside = False
+                    continue
                 lines.append(line)
         return "\n".join(lines).strip()
     except Exception:

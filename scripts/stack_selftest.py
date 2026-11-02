@@ -91,6 +91,8 @@ def test_stacks():
     laravel = repo({"artisan": "", "composer.json": '{"require":{"laravel/framework":"^11"}}', "package.json": "{}"})
     symfony = repo({"composer.json": '{"require":{"symfony/framework-bundle":"^7"}}'})
     php = repo({"composer.json": '{"require":{"slim/slim":"^4"}}'})
+    nuxt = repo({"package.json": '{"dependencies":{"nuxt":"^4.0.0"}}',
+                 "nuxt.config.ts": "export default defineNuxtConfig({})"})
     plain = repo({"README.md": "# nothing"})
     lookalike = repo({"requirements.txt": "django-environ\ndjangorestframework-simplejwt\n"})
 
@@ -104,6 +106,10 @@ def test_stacks():
     check(group, "go.mod is go", ids(craft_stack.detect(str(go))), "go@.")
     check(group, "pom.xml is java", ids(craft_stack.detect(str(java))), "java@.")
     check(group, "package.json is node", ids(craft_stack.detect(str(node))), "node@.")
+    check(group, "nuxt dep and config are nuxt, not vue", ids(craft_stack.detect(str(nuxt))), "nuxt@.")
+    check(group, "the nuxt pack lists only skills that exist",
+          all((craft_stack.PLUGIN_ROOT / "skills" / name / "SKILL.md").is_file()
+              for name in craft_stack.skills_for(str(nuxt), with_concurrency=False)), True)
     check(group, "a monorepo gets one stack per service", ids(craft_stack.detect(str(mono))),
           "fastapi@api,go@services/wallet,node@web")
     check(group, "one python pack per directory, by priority", ids(craft_stack.detect(str(both))), "django@.,node@.")
@@ -313,6 +319,22 @@ def test_ui_state():
     run("craft-session", ["record-finding", "--severity", "Critical", "--title", "y", "--state", "confirmed"], root)
     data = json.loads(run("craft-ui-state", [], root)[1])
     check(group, "a confirmed critical requests changes", data["gate_b"]["state"], "changes requested")
+
+
+def run_script(relative, cwd=None):
+    finished = subprocess.run([sys.executable, str(ROOT / relative)], cwd=str(cwd or ROOT),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+    return finished.returncode, finished.stdout.decode("utf-8", errors="replace")
+
+
+def test_frontend_units():
+    group = "frontend units"
+    for relative, label in (("scripts/frontend_unit_detection_test.py", "detection"),
+                            ("scripts/frontend_unit_analyzer_test.py", "analyzer")):
+        code, out = run_script(relative)
+        passed = len([line for line in out.splitlines() if line.lstrip().startswith("ok  ")])
+        check(group, "%s suite exits 0 with every check green" % label, (code, "FAIL  " in out), (0, False))
+        check(group, "%s suite check count" % label, passed, 18 if label == "detection" else 11)
 
 
 def report():
